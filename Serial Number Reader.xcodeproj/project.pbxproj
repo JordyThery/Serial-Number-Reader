@@ -19,7 +19,6 @@
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Serial Number Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Serial Number Reader.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		08FC3F2230761880007EB97F /* Serial Number Reader Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Serial Number Reader Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		08FC3F34307631BD007EB97F /* Serial-Number-Reader-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Serial-Number-Reader-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -52,7 +51,6 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				08FC3F34307631BD007EB97F /* Serial-Number-Reader-Info.plist */,
 				000000000000000000000010 /* Serial Number Reader */,
 				08FC3F2330761881007EB97F /* Serial Number Reader Tests */,
 				000000000000000000000020 /* Products */,
@@ -339,7 +337,6 @@
 				ENABLE_RESOURCE_ACCESS_USB = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "Serial-Number-Reader-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Serial Number Reader";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -395,7 +392,6 @@
 				ENABLE_RESOURCE_ACCESS_USB = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "Serial-Number-Reader-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Serial Number Reader";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
