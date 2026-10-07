@@ -37,6 +37,11 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     var serialNumber: String? { descriptor?.serialNumber }
     var ecid: String? { descriptor?.ecid }
 
+    /// Stable identity for a physical device, used to clear its own stale
+    /// disconnected rows when it reconnects. Nil for opaque DFU devices, which
+    /// expose no identifiers at all.
+    var identityKey: String? { serialNumber ?? udid ?? ecid }
+
     /// True for newer devices whose DFU mode enumerates as a locked-down
     /// "Debug USB" function that exposes no identifiers at all.
     var isOpaqueDFU: Bool { mode == .dfu && descriptor == nil }

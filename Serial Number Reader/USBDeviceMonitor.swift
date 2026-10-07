@@ -107,7 +107,18 @@ final class USBDeviceMonitor {
                 if let index = devices.firstIndex(where: { $0.id == device.id }) {
                     devices[index] = device
                 } else {
-                    // Every connection is its own log entry, newest on top.
+                    // Drop this device's own stale disconnected rows so a
+                    // device cycling modes (Normal→DFU→Normal during a restart)
+                    // doesn't pile up duplicates. Distinct connected devices
+                    // keep their own rows.
+                    if let key = device.identityKey {
+                        devices.removeAll { !$0.isConnected && $0.identityKey == key }
+                    } else if device.isOpaqueDFU {
+                        // Opaque DFU entries share no identity; collapse prior
+                        // disconnected ones so they don't accumulate either.
+                        devices.removeAll { !$0.isConnected && $0.isOpaqueDFU }
+                    }
+                    // Newest on top.
                     devices.insert(device, at: 0)
                 }
             }
