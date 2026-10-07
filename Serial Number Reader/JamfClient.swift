@@ -38,6 +38,7 @@ nonisolated enum JamfError: Error, LocalizedError, Equatable {
     case httpError(Int, String)
     case networkFailure(String)
     case decodingFailure(String)
+    case invalidIdentifier
     case noMatch
     case multipleMatches(Int)
 
@@ -47,6 +48,7 @@ nonisolated enum JamfError: Error, LocalizedError, Equatable {
         case .httpError(let code, let detail): "Jamf Pro returned HTTP \(code): \(detail)"
         case .networkFailure(let detail): "Network error: \(detail)"
         case .decodingFailure(let detail): "Unexpected Jamf response: \(detail)"
+        case .invalidIdentifier: "The device identifier contains unexpected characters"
         case .noMatch: "No matching device found in Jamf Pro"
         case .multipleMatches(let count): "\(count) devices in Jamf Pro match — record is ambiguous"
         }
@@ -109,14 +111,26 @@ actor JamfClient {
     func lookup(_ query: JamfQuery) async throws -> JamfDeviceRecord {
         switch query {
         case .udid(let udid):
-            return try await lookupMobileDevice(filter: "udid==\"\(udid)\"")
+            let safe = try Self.validatedIdentifier(udid)
+            return try await lookupMobileDevice(filter: "udid==\"\(safe)\"")
         case .serialNumber(let serial):
+            let safe = try Self.validatedIdentifier(serial)
             do {
-                return try await lookupMobileDevice(filter: "serialNumber==\"\(serial)\"")
+                return try await lookupMobileDevice(filter: "serialNumber==\"\(safe)\"")
             } catch JamfError.noMatch {
-                return try await lookupComputer(serial: serial)
+                return try await lookupComputer(serial: safe)
             }
         }
+    }
+
+    /// Serials and UDIDs are alphanumeric plus hyphens. The values originate
+    /// from USB descriptors — device-controlled data — so anything else is
+    /// rejected rather than interpolated into an RSQL filter.
+    private static func validatedIdentifier(_ value: String) throws -> String {
+        guard !value.isEmpty, value.count <= 64,
+              value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" })
+        else { throw JamfError.invalidIdentifier }
+        return value
     }
 
     /// Fetches a token; used by Settings to validate credentials.

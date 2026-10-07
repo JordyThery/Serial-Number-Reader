@@ -44,6 +44,7 @@ struct ContentView: View {
         } detail: {
             if let device = selectedDevice {
                 DeviceDetailView(device: device, jamf: jamf)
+                    .id(device.id) // reset per-device view state on selection change
             } else {
                 ContentUnavailableView(
                     "No Device Selected",
@@ -62,7 +63,7 @@ struct ContentView: View {
             for device in monitor.devices {
                 jamf.lookupIfNeeded(for: device)
             }
-            // Keep the selection valid and auto-select a sole device.
+            // If nothing valid is selected, select the newest connection.
             if selectedDevice == nil {
                 selectedDeviceID = monitor.devices.first?.id
             }
@@ -110,6 +111,7 @@ struct DeviceRow: View {
             }
         }
         .padding(.vertical, 4)
+        .help(connectionTooltip)
     }
 
     private var jamfSerial: String? {
@@ -118,7 +120,18 @@ struct DeviceRow: View {
     }
 
     private var serialLine: String {
-        device.serialNumber ?? jamfSerial ?? device.serialStatusText
+        if let serial = device.serialNumber ?? jamfSerial { return serial }
+        // A booted device's serial can only come from Jamf.
+        if device.mode == .normal, case .notConfigured = jamfState {
+            return "Serial requires Jamf Pro (not configured)"
+        }
+        return device.serialStatusText
+    }
+
+    private var connectionTooltip: String {
+        let connected = "Connected \(device.connectedAt.formatted(date: .omitted, time: .standard))"
+        guard let disconnectedAt = device.disconnectedAt else { return connected }
+        return "\(connected) · Disconnected \(disconnectedAt.formatted(date: .omitted, time: .standard))"
     }
 
     private var jamfStatusLine: String {
@@ -136,6 +149,8 @@ struct DeviceRow: View {
     private var iconName: String {
         if device.modelInfo?.identifier.hasPrefix("Mac") == true { return "laptopcomputer" }
         if device.modelDisplayName.localizedCaseInsensitiveContains("ipad") { return "ipad" }
+        // Opaque DFU devices expose no identifiers — don't imply a device type.
+        if device.isOpaqueDFU { return "apple.logo" }
         return "iphone"
     }
 

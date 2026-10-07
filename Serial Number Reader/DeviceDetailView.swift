@@ -62,9 +62,10 @@ struct DeviceDetailView: View {
                     Button {
                         actions.enterRecovery(device: device)
                     } label: {
-                        Label("Enter Recovery", systemImage: "arrow.trianglehead.counterclockwise")
+                        Label("Enter Recovery", systemImage: "arrow.counterclockwise")
                     }
                     .disabled(actions.runningAction != nil)
+                    .help("Reboot this device into Recovery mode — no button presses or password needed")
                 }
 
                 if device.mode == .recovery {
@@ -74,6 +75,7 @@ struct DeviceDetailView: View {
                         Label("Boot to Normal", systemImage: "power")
                     }
                     .disabled(actions.runningAction != nil)
+                    .help("Reboot this device out of Recovery into normal operation")
                 }
 
                 Button {
@@ -82,6 +84,7 @@ struct DeviceDetailView: View {
                     Label("Restart", systemImage: "restart")
                 }
                 .disabled(actions.runningAction != nil)
+                .help("Force-restart via USB-C power delivery — requires an administrator password")
 
                 if device.mode != .dfu {
                     Button {
@@ -90,6 +93,7 @@ struct DeviceDetailView: View {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
                     .disabled(actions.runningAction != nil)
+                    .help("Reboot into DFU mode via USB-C power delivery — requires an administrator password")
                 }
 
                 if actions.runningAction != nil {
@@ -141,6 +145,11 @@ struct DeviceDetailView: View {
                 }
             } else if case .found(let record) = jamf.state(for: device), let serial = record.serialNumber {
                 CopyableRow(label: "Serial Number (from Jamf)", value: serial, showsQR: true)
+            } else if case .notConfigured = jamf.state(for: device) {
+                LabeledContent("Serial Number") {
+                    Text("Requires a Jamf Pro lookup — configure Jamf in Settings")
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 LabeledContent("Serial Number") {
                     Text("Pending Jamf lookup")
@@ -294,6 +303,7 @@ struct DeviceDetailView: View {
         } label: {
             Label("Retry Lookup", systemImage: "arrow.clockwise")
         }
+        .help("Run the Jamf Pro lookup again")
     }
 }
 

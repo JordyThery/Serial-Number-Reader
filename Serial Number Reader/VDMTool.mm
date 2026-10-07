@@ -40,6 +40,7 @@ struct HPMPort {
     IOCFPlugInInterface **plugin = nullptr;
     AppleHPMLib **device = nullptr;
     int32_t rid = -1;
+    bool inDebugMode = false;
 
     HPMPort(io_service_t service, int32_t rid) : rid(rid) {
         SInt32 score;
@@ -56,8 +57,10 @@ struct HPMPort {
 
     ~HPMPort() {
         if (plugin) {
-            // Best-effort exit of debug mode; ignore errors on teardown.
-            command(0, 'DBMa', std::string("\x00", 1));
+            // Restore the port only if it was put into debug mode;
+            // ignore errors on teardown.
+            if (inDebugMode)
+                command(0, 'DBMa', std::string("\x00", 1));
             IODestroyPlugInInterface(plugin);
         }
     }
@@ -176,6 +179,7 @@ bool RunOnPort(io_service_t service, int32_t rid, const std::string &action,
         if (status != "DBMa")
             throw Failure{"Failed to enter debug mode"};
     }
+    inst.inDebugMode = true;
 
     if (action == "reboot")
         DoReboot(inst, no);

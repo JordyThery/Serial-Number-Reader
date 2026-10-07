@@ -53,9 +53,4 @@ nonisolated final class ModelDatabase: Sendable {
         guard let identifier = boards[key] else { return nil }
         return ModelInfo(identifier: identifier, marketingName: models[identifier])
     }
-
-    /// Marketing name for a bare model identifier (used for Jamf data display).
-    func marketingName(forIdentifier identifier: String) -> String? {
-        models[identifier]
-    }
 }

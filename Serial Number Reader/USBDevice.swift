@@ -151,9 +151,13 @@ nonisolated enum DFUExitInstructions {
     }
 
     private static let genericInstructions = """
-    Model unknown — try the Face ID sequence first:
-    1. Press and quickly release Volume Up, then Volume Down, then hold the Side/Top button \
-    until the Recovery screen appears.
-    2. On devices with a Home button: hold Home + Side/Top button together instead.
+    iPhone or iPad without a Home button:
+    1. Press and quickly release Volume Up.
+    2. Press and quickly release Volume Down.
+    3. Press and hold the Side button (iPhone) or Top button (iPad); keep holding past the Apple logo.
+    4. Release when the Recovery screen appears.
+
+    iPhone or iPad with a Home button: press and hold the Home button and the Side/Top button \
+    together until the Recovery screen appears.
     """
 }
