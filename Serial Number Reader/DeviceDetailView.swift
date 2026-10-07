@@ -9,10 +9,15 @@ struct DeviceDetailView: View {
     /// Raw descriptor fields are collapsed by default — they're diagnostic
     /// detail and take a lot of vertical space.
     @State private var descriptorFieldsExpanded = false
+    @State private var vdm = VDMController()
 
     var body: some View {
         Form {
             deviceSection
+
+            if device.isConnected {
+                powerSection
+            }
 
             identifierSection
 
@@ -45,6 +50,45 @@ struct DeviceDetailView: View {
                 LabeledContent("USB Product Name", value: name)
             }
             LabeledContent("USB Product ID", value: String(format: "0x%04X", device.productID))
+        }
+    }
+
+    // MARK: Power (USB-PD VDM actions)
+
+    private var powerSection: some View {
+        Section {
+            HStack(spacing: 10) {
+                Button {
+                    vdm.run(.reboot)
+                } label: {
+                    Label("Restart", systemImage: "restart")
+                }
+                .disabled(vdm.runningAction != nil)
+
+                Button {
+                    vdm.run(.dfu)
+                } label: {
+                    Label("Enter DFU", systemImage: "bolt.horizontal")
+                }
+                .disabled(vdm.runningAction != nil)
+
+                if vdm.runningAction != nil {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+            }
+
+            if let error = vdm.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("Power")
+        } footer: {
+            Text("Sends a USB-C power-delivery command to the device over any port. Restart and DFU work even on an unresponsive device; macOS will ask for an administrator password. Recovery mode isn't reachable this way — enter DFU, then follow the button steps to Recovery.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
