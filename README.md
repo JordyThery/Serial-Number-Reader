@@ -13,7 +13,7 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 - **Recovery mode** — reads the serial number and ECID directly from the USB descriptor; model is resolved from the CPID/BDID pair.
 - **DFU mode** — detects the device and shows the model-specific button sequence to reach Recovery (current devices expose no identifiers over USB in DFU).
 - **Jamf Pro lookup** by serial or UDID, showing device name, serial, UDID, model, OS version, managed state, assigned user and last inventory date — with an **editable asset tag** and a link to the record.
-- **USB-C power actions** — Restart or Enter DFU over any port, even on an unresponsive device.
+- **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU any USB-C device over any port, even when it's unresponsive.
 - **Copy buttons** and a scannable **QR code** for the serial number.
 
 ## Requirements
@@ -29,11 +29,13 @@ Download the latest build from [Releases](../../releases), unzip, and move **Ser
 
 Connect a device over USB. It appears in the sidebar with its mode; select it to see full details.
 
-| Mode | What you get |
-| --- | --- |
-| Normal | UDID, then Jamf record (serial, model, user, asset tag, …) |
-| Recovery | Serial number + ECID read directly; model from CPID/BDID; Jamf record |
-| DFU | Presence detection and guided steps to enter Recovery mode |
+| Mode | What you get | Actions |
+| --- | --- | --- |
+| Normal | UDID, then Jamf record (serial, model, user, asset tag, …) | Enter Recovery · Restart · Enter DFU |
+| Recovery | Serial number + ECID read directly; model from CPID/BDID; Jamf record | Boot to Normal · Restart · Enter DFU |
+| DFU | Presence detection and guided steps to enter Recovery mode | Restart |
+
+Enter Recovery and Boot to Normal need no privileges; Restart and Enter DFU use USB-C power delivery and prompt for an administrator password.
 
 > **Note on booted devices:** an iPhone or iPad that has not been unlocked since power-on does not enumerate over USB (iOS USB restricted mode). Unlock it once, or put it into Recovery mode to read the serial.
 

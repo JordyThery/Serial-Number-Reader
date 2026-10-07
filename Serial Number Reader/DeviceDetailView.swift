@@ -9,7 +9,7 @@ struct DeviceDetailView: View {
     /// Raw descriptor fields are collapsed by default — they're diagnostic
     /// detail and take a lot of vertical space.
     @State private var descriptorFieldsExpanded = false
-    @State private var vdm = VDMController()
+    @State private var actions = DeviceActionController()
 
     var body: some View {
         Form {
@@ -58,27 +58,47 @@ struct DeviceDetailView: View {
     private var powerSection: some View {
         Section {
             HStack(spacing: 10) {
+                if device.mode == .normal, device.udid != nil {
+                    Button {
+                        actions.enterRecovery(device: device)
+                    } label: {
+                        Label("Enter Recovery", systemImage: "arrow.trianglehead.counterclockwise")
+                    }
+                    .disabled(actions.runningAction != nil)
+                }
+
+                if device.mode == .recovery {
+                    Button {
+                        actions.bootToNormal(device: device)
+                    } label: {
+                        Label("Boot to Normal", systemImage: "power")
+                    }
+                    .disabled(actions.runningAction != nil)
+                }
+
                 Button {
-                    vdm.run(.reboot)
+                    actions.restart()
                 } label: {
                     Label("Restart", systemImage: "restart")
                 }
-                .disabled(vdm.runningAction != nil)
+                .disabled(actions.runningAction != nil)
 
-                Button {
-                    vdm.run(.dfu)
-                } label: {
-                    Label("Enter DFU", systemImage: "bolt.horizontal")
+                if device.mode != .dfu {
+                    Button {
+                        actions.enterDFU()
+                    } label: {
+                        Label("Enter DFU", systemImage: "bolt.horizontal")
+                    }
+                    .disabled(actions.runningAction != nil)
                 }
-                .disabled(vdm.runningAction != nil)
 
-                if vdm.runningAction != nil {
+                if actions.runningAction != nil {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
             }
 
-            if let error = vdm.lastError {
+            if let error = actions.lastError {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -86,9 +106,20 @@ struct DeviceDetailView: View {
         } header: {
             Text("Power")
         } footer: {
-            Text("Sends a USB-C power-delivery command to the device over any port. Restart and DFU work even on an unresponsive device; macOS will ask for an administrator password. Recovery mode isn't reachable this way — enter DFU, then follow the button steps to Recovery.")
+            Text(powerFooterText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var powerFooterText: String {
+        switch device.mode {
+        case .normal:
+            "Enter Recovery asks the device to reboot into Recovery mode — the serial number then appears here automatically, no buttons needed. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+        case .recovery:
+            "Boot to Normal sends “auto-boot true” and reboots the device out of Recovery. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+        case .dfu:
+            "Restart sends a USB-C power-delivery command over any port — it works even in DFU — and prompts for an administrator password."
         }
     }
 
