@@ -89,6 +89,15 @@ struct HPMPort {
     }
 };
 
+// Interpret a register read as a NUL-terminated string. The raw buffer is 64
+// bytes and may contain no NUL at all — never assume one.
+std::string TrimAtNul(std::string value) {
+    auto nul = value.find('\0');
+    if (nul != std::string::npos)
+        value.erase(nul);
+    return value;
+}
+
 // The Mac's 4-char model code, used as the ACE2 unlock key.
 uint32_t GetUnlockKey() {
     CFMutableDictionaryRef matching = IOServiceMatching("IOPlatformExpertDevice");
@@ -168,18 +177,20 @@ bool RunOnPort(io_service_t service, int32_t rid, const std::string &action,
         return false; // nothing connected to this port
     connected = true;
 
-    auto status = inst.readRegister(no, 0x03);
-    status.erase(status.find('\0'));
+    auto status = TrimAtNul(inst.readRegister(no, 0x03));
     if (status != "DBMa") {
         UnlockAce(inst, no, key);
+        // From here the port may have entered debug mode even if verification
+        // fails below — always restore it on teardown.
+        inst.inDebugMode = true;
         if (inst.command(no, 'DBMa', std::string("\x01", 1)))
             throw Failure{"Failed to enter debug mode"};
-        status = inst.readRegister(no, 0x03);
-        status.erase(status.find('\0'));
+        status = TrimAtNul(inst.readRegister(no, 0x03));
         if (status != "DBMa")
             throw Failure{"Failed to enter debug mode"};
+    } else {
+        inst.inDebugMode = true;
     }
-    inst.inDebugMode = true;
 
     if (action == "reboot")
         DoReboot(inst, no);
@@ -252,6 +263,9 @@ bool RunOnPort(io_service_t service, int32_t rid, const std::string &action,
         return 3;
     } catch (const Failure &f) {
         fprintf(stderr, "%s\n", f.message.c_str());
+        return 1;
+    } catch (...) {
+        fprintf(stderr, "Unexpected internal error\n");
         return 1;
     }
 }

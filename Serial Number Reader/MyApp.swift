@@ -16,10 +16,11 @@ struct MyApp {
 struct SerialNumberReaderApp: App {
     @State private var monitor = USBDeviceMonitor()
     @State private var jamf = JamfStore()
+    @State private var actions = DeviceActionController()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(monitor: monitor, jamf: jamf)
+            ContentView(monitor: monitor, jamf: jamf, actions: actions)
                 .frame(minWidth: 760, minHeight: 440)
         }
 

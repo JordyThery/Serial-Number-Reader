@@ -6,10 +6,15 @@ import os
 /// - **Restart / Enter DFU** — USB-PD vendor-defined messages via the private
 ///   AppleHPM port-controller interface. Requires root, so the app re-launches
 ///   its own executable with `--vdm <action>` through an administrator prompt.
+///   The command targets the first port with a connected device, so the UI
+///   only offers it while a single device is attached.
 /// - **Enter Recovery** — lockdownd `EnterRecovery` over usbmuxd for a booted
 ///   device. No privileges required.
 /// - **Boot to Normal** — iBoot `setenv auto-boot true` + `reboot` over USB
 ///   control requests for a Recovery-mode device. No privileges required.
+///
+/// A single instance is shared app-wide so only one action runs at a time —
+/// the VDM path operates on ports, not on a specific selected device.
 @MainActor
 @Observable
 final class DeviceActionController {
@@ -28,12 +33,17 @@ final class DeviceActionController {
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "DeviceActions")
 
-    // MARK: - Privileged VDM actions (admin prompt)
+    // MARK: - Actions
 
-    func restart() { runVDM(.reboot, argument: "reboot") }
-    func enterDFU() { runVDM(.dfu, argument: "dfu") }
+    /// Force-restarts the connected device via USB-PD (admin prompt).
+    func restart() {
+        start(.reboot) { Self.runPrivilegedVDM("reboot") }
+    }
 
-    // MARK: - Unprivileged actions
+    /// Reboots the connected device into DFU mode via USB-PD (admin prompt).
+    func enterDFU() {
+        start(.dfu) { Self.runPrivilegedVDM("dfu") }
+    }
 
     /// Asks a booted device to reboot into Recovery mode via lockdownd.
     func enterRecovery(device: USBDevice) {
@@ -81,23 +91,12 @@ final class DeviceActionController {
         }
     }
 
-    private func runVDM(_ action: Action, argument: String) {
-        guard runningAction == nil else { return }
-        runningAction = action
-        lastError = nil
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.executeViaAppleScript(argument)
-            }.value
-            switch result {
-            case .success:
-                logger.debug("VDM \(argument, privacy: .public) sent")
-            case .cancelled:
-                break // user dismissed the password prompt — stay silent
-            case .failure(let message):
-                lastError = message
-            }
-            runningAction = nil
+    /// Returns an error message, or nil for success and for a cancelled
+    /// authorization prompt (cancellation is intentionally silent).
+    private nonisolated static func runPrivilegedVDM(_ action: String) -> String? {
+        switch executeViaAppleScript(action) {
+        case .success, .cancelled: nil
+        case .failure(let message): message
         }
     }
 

@@ -87,9 +87,14 @@ final class JamfStore {
     }
 
     private(set) var lookupStates: [JamfQuery: JamfLookupState] = [:]
+    /// Bumped (debounced) whenever the configuration changes; the UI observes
+    /// it to re-run lookups, and in-flight results from an older generation
+    /// are discarded instead of being cached against the new server.
+    private(set) var configurationGeneration = 0
 
     @ObservationIgnored private var client: JamfClient?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
+    @ObservationIgnored private var invalidationTask: Task<Void, Never>?
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
 
     init() {
@@ -117,10 +122,15 @@ final class JamfStore {
 
     private func invalidateClient() {
         client = nil
-        // Drop cached results — they may belong to a different server.
-        lookupStates = lookupStates.filter {
-            if case .loading = $0.value { return true }
-            return false
+        // Debounced: typing in Settings changes the configuration on every
+        // keystroke. Once the user pauses, drop cached results (they may
+        // belong to a different server) and signal observers to re-run.
+        invalidationTask?.cancel()
+        invalidationTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard let self, !Task.isCancelled else { return }
+            self.lookupStates.removeAll()
+            self.configurationGeneration += 1
         }
     }
 
@@ -167,6 +177,7 @@ final class JamfStore {
         guard !inFlight.contains(query) else { return }
         inFlight.insert(query)
         lookupStates[query] = .loading
+        let generation = configurationGeneration
 
         Task {
             let state: JamfLookupState
@@ -183,7 +194,13 @@ final class JamfStore {
                 state = .failed(error.localizedDescription)
             }
             inFlight.remove(query)
-            lookupStates[query] = state
+            if generation == configurationGeneration {
+                lookupStates[query] = state
+            } else if lookupStates[query] == nil {
+                // The configuration changed mid-flight: discard this result
+                // and look up again against the current server.
+                performLookup(query)
+            }
         }
     }
 

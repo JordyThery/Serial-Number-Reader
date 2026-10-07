@@ -54,8 +54,12 @@
         };
         result = (*device)->DeviceRequest(device, &request);
         if (result != kIOReturnSuccess) {
-            // "reboot" detaches the device mid-request; that's success.
-            if ([command hasPrefix:@"reboot"]) break;
+            // "reboot" detaches the device mid-request — only the detach
+            // errors count as success; anything else is a real failure.
+            BOOL detached = result == kIOReturnNotResponding
+                || result == kIOReturnNoDevice
+                || result == kIOReturnAborted;
+            if ([command hasPrefix:@"reboot"] && detached) break;
             error = [NSString stringWithFormat:@"Command “%@” failed (0x%x)", command, result];
             break;
         }

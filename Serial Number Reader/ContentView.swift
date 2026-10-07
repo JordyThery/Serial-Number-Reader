@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     let monitor: USBDeviceMonitor
     let jamf: JamfStore
+    let actions: DeviceActionController
 
     @State private var selectedDeviceID: USBDevice.ID?
 
@@ -43,8 +44,13 @@ struct ContentView: View {
             }
         } detail: {
             if let device = selectedDevice {
-                DeviceDetailView(device: device, jamf: jamf)
-                    .id(device.id) // reset per-device view state on selection change
+                DeviceDetailView(
+                    device: device,
+                    jamf: jamf,
+                    actions: actions,
+                    connectedDeviceCount: monitor.devices.count(where: \.isConnected)
+                )
+                .id(device.id) // reset per-device view state on selection change
             } else {
                 ContentUnavailableView(
                     "No Device Selected",
@@ -66,6 +72,12 @@ struct ContentView: View {
             // If nothing valid is selected, select the newest connection.
             if selectedDevice == nil {
                 selectedDeviceID = monitor.devices.first?.id
+            }
+        }
+        .onChange(of: jamf.configurationGeneration) {
+            // Settings changed: cached results were dropped — look up again.
+            for device in monitor.devices {
+                jamf.lookupIfNeeded(for: device)
             }
         }
     }
@@ -121,11 +133,18 @@ struct DeviceRow: View {
 
     private var serialLine: String {
         if let serial = device.serialNumber ?? jamfSerial { return serial }
-        // A booted device's serial can only come from Jamf.
-        if device.mode == .normal, case .notConfigured = jamfState {
-            return "Serial requires Jamf Pro (not configured)"
+        guard device.mode == .normal else { return device.serialStatusText }
+        // A booted device's serial can only come from Jamf — be precise
+        // about why it isn't available.
+        switch jamfState {
+        case .notConfigured: return "Serial requires Jamf Pro (not configured)"
+        case .noMatch: return "Serial unknown — no Jamf match"
+        case .multipleMatches: return "Serial ambiguous — multiple Jamf matches"
+        case .failed: return "Serial unavailable — Jamf lookup failed"
+        case .unavailable: return "Serial unavailable — no UDID reported"
+        case .found: return "Serial not present in the Jamf record"
+        case .loading: return "Serial pending Jamf lookup"
         }
-        return device.serialStatusText
     }
 
     private var connectionTooltip: String {
@@ -185,5 +204,5 @@ struct ModeBadge: View {
 }
 
 #Preview {
-    ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore())
+    ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController())
 }

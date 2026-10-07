@@ -5,11 +5,18 @@ import SwiftUI
 struct DeviceDetailView: View {
     let device: USBDevice
     let jamf: JamfStore
+    /// Shared app-wide so only one action runs at a time (the VDM path
+    /// targets a port, not a specific device) and errors survive selection
+    /// changes.
+    let actions: DeviceActionController
+    /// Number of currently connected devices; the VDM actions are offered
+    /// only while exactly one device is attached, because the command goes
+    /// to the first connected port, not to the selected device.
+    let connectedDeviceCount: Int
 
     /// Raw descriptor fields are collapsed by default — they're diagnostic
     /// detail and take a lot of vertical space.
     @State private var descriptorFieldsExpanded = false
-    @State private var actions = DeviceActionController()
 
     var body: some View {
         Form {
@@ -83,8 +90,10 @@ struct DeviceDetailView: View {
                 } label: {
                     Label("Restart", systemImage: "restart")
                 }
-                .disabled(actions.runningAction != nil)
-                .help("Force-restart via USB-C power delivery — requires an administrator password")
+                .disabled(actions.runningAction != nil || vdmUnavailable)
+                .help(vdmUnavailable
+                      ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
+                      : "Force-restart via USB-C power delivery — requires an administrator password")
 
                 if device.mode != .dfu {
                     Button {
@@ -92,8 +101,10 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
-                    .disabled(actions.runningAction != nil)
-                    .help("Reboot into DFU mode via USB-C power delivery — requires an administrator password")
+                    .disabled(actions.runningAction != nil || vdmUnavailable)
+                    .help(vdmUnavailable
+                          ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
+                          : "Reboot into DFU mode via USB-C power delivery — requires an administrator password")
                 }
 
                 if actions.runningAction != nil {
@@ -116,8 +127,12 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// The USB-PD command goes to the first connected port, so with several
+    /// devices attached it could hit the wrong one — offer it only for one.
+    private var vdmUnavailable: Bool { connectedDeviceCount > 1 }
+
     private var powerFooterText: String {
-        switch device.mode {
+        var text = switch device.mode {
         case .normal:
             "Enter Recovery asks the device to reboot into Recovery mode — the serial number then appears here automatically, no buttons needed. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
         case .recovery:
@@ -125,6 +140,10 @@ struct DeviceDetailView: View {
         case .dfu:
             "Restart sends a USB-C power-delivery command over any port — it works even in DFU — and prompts for an administrator password."
         }
+        if vdmUnavailable {
+            text += " Restart and Enter DFU are disabled while more than one device is connected, because the command targets a port rather than a specific device."
+        }
+        return text
     }
 
     // MARK: Identifiers
@@ -143,18 +162,8 @@ struct DeviceDetailView: View {
                     Text("Not readable in DFU mode")
                         .foregroundStyle(.secondary)
                 }
-            } else if case .found(let record) = jamf.state(for: device), let serial = record.serialNumber {
-                CopyableRow(label: "Serial Number (from Jamf)", value: serial, showsQR: true)
-            } else if case .notConfigured = jamf.state(for: device) {
-                LabeledContent("Serial Number") {
-                    Text("Requires a Jamf Pro lookup — configure Jamf in Settings")
-                        .foregroundStyle(.secondary)
-                }
             } else {
-                LabeledContent("Serial Number") {
-                    Text("Pending Jamf lookup")
-                        .foregroundStyle(.secondary)
-                }
+                normalModeSerialRow
             }
 
             if let udid = device.udid {
@@ -163,6 +172,38 @@ struct DeviceDetailView: View {
             if let ecid = device.ecid {
                 CopyableRow(label: "ECID", value: ecid)
             }
+        }
+    }
+
+    /// Serial row for a booted device: the serial can only come from Jamf,
+    /// so state exactly why it is or isn't available.
+    @ViewBuilder
+    private var normalModeSerialRow: some View {
+        switch jamf.state(for: device) {
+        case .found(let record):
+            if let serial = record.serialNumber {
+                CopyableRow(label: "Serial Number (from Jamf)", value: serial, showsQR: true)
+            } else {
+                unavailableSerialRow("Not present in the Jamf record")
+            }
+        case .notConfigured:
+            unavailableSerialRow("Requires a Jamf Pro lookup — configure Jamf in Settings")
+        case .noMatch:
+            unavailableSerialRow("No matching Jamf record")
+        case .multipleMatches:
+            unavailableSerialRow("Ambiguous — multiple Jamf records match")
+        case .failed:
+            unavailableSerialRow("Jamf lookup failed — see the Jamf Pro section")
+        case .unavailable(let reason):
+            unavailableSerialRow(reason)
+        case .loading:
+            unavailableSerialRow("Pending Jamf lookup")
+        }
+    }
+
+    private func unavailableSerialRow(_ text: String) -> some View {
+        LabeledContent("Serial Number") {
+            Text(text).foregroundStyle(.secondary)
         }
     }
 
