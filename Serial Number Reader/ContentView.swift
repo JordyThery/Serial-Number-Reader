@@ -5,6 +5,7 @@ struct ContentView: View {
     let jamf: JamfStore
     let actions: DeviceActionController
 
+    @Environment(UpdateChecker.self) private var updates
     @State private var selectedDeviceID: USBDevice.ID?
 
     private var selectedDevice: USBDevice? {
@@ -62,6 +63,9 @@ struct ContentView: View {
             }
         }
         .navigationTitle("Serial Number Reader")
+        .sheet(isPresented: Bindable(updates).isPresented) {
+            UpdateView()
+        }
         .task {
             monitor.start()
         }
@@ -205,4 +209,5 @@ struct ModeBadge: View {
 
 #Preview {
     ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController())
+        .environment(UpdateChecker())
 }

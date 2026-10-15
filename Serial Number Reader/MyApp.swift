@@ -17,11 +17,19 @@ struct SerialNumberReaderApp: App {
     @State private var monitor = USBDeviceMonitor()
     @State private var jamf = JamfStore()
     @State private var actions = DeviceActionController()
+    @State private var updates = UpdateChecker()
 
     var body: some Scene {
         WindowGroup {
             ContentView(monitor: monitor, jamf: jamf, actions: actions)
+                .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
+                .task { await updates.checkAutomatically() }
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updates.checkManually() }
+            }
         }
 
         Settings {

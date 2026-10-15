@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var jamf: JamfStore
 
+    @AppStorage(UpdateChecker.automaticCheckKey) private var checksForUpdates = true
     @State private var testResult: TestResult?
     @State private var testing = false
 
@@ -78,6 +79,16 @@ struct SettingsView: View {
                         EmptyView()
                     }
                 }
+            }
+
+            Section {
+                Toggle("Check for updates automatically", isOn: $checksForUpdates)
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Checks GitHub for a new release at most once a day. Use Serial Number Reader → Check for Updates… to check now.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
