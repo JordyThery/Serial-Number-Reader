@@ -50,7 +50,9 @@ final class JamfStore {
     var serverURLString: String {
         didSet {
             UserDefaults.standard.set(serverURLString, forKey: DefaultsKey.serverURL)
-            invalidateClient()
+            // With the Platform API this address only feeds "Open in Jamf Pro"
+            // links, which are computed live — lookups don't depend on it.
+            if authMethod != .platform { invalidateClient() }
         }
     }
 

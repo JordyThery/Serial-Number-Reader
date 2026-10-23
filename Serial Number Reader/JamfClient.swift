@@ -205,11 +205,16 @@ actor JamfClient {
 
     /// Validates the configuration; used by Settings. For the Platform API a
     /// token alone doesn't prove the environment ID is right, so it also makes
-    /// one cheap request through the environment.
+    /// one cheap request through the environment — an inventory read, which
+    /// the required devices:read permission covers.
     func testConnection() async throws {
         _ = try await validToken(forceRefresh: true)
         if config.isPlatform {
-            _ = try await authorizedGET(path: "v1/jamf-pro-version", queryItems: [])
+            _ = try await authorizedGET(path: "v1/computers-inventory", queryItems: [
+                URLQueryItem(name: "section", value: "GENERAL"),
+                URLQueryItem(name: "page", value: "0"),
+                URLQueryItem(name: "page-size", value: "1"),
+            ])
         }
     }
 
