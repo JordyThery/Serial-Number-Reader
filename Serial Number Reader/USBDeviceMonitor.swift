@@ -105,7 +105,13 @@ final class USBDeviceMonitor {
         while service != 0 {
             if let device = makeDevice(from: service) {
                 if let index = devices.firstIndex(where: { $0.id == device.id }) {
-                    devices[index] = device
+                    // Re-published entry: keep details already read from the device.
+                    var updated = device
+                    if let info = devices[index].lockdownInfo {
+                        updated.lockdownInfo = info
+                        updated.modelInfo = devices[index].modelInfo
+                    }
+                    devices[index] = updated
                 } else {
                     // Drop this device's own stale disconnected rows so a
                     // device cycling modes (Normal→DFU→Normal during a restart)
@@ -120,6 +126,9 @@ final class USBDeviceMonitor {
                     }
                     // Newest on top.
                     devices.insert(device, at: 0)
+                    if device.mode == .normal, let udid = device.udid {
+                        readLockdownInfo(deviceID: device.id, udid: udid)
+                    }
                 }
             }
             IOObjectRelease(service)
@@ -139,6 +148,36 @@ final class USBDeviceMonitor {
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
+        }
+    }
+
+    // MARK: - Booted-device details
+
+    /// Reads model, OS version and name from a booted device. usbmuxd lists a
+    /// device shortly after it appears on USB, so a few retries cover the gap.
+    /// Failure is silent: the row keeps the USB product name.
+    private func readLockdownInfo(deviceID: UInt64, udid: String) {
+        Task {
+            for attempt in 0..<5 {
+                if attempt > 0 { try? await Task.sleep(for: .seconds(1)) }
+                guard devices.contains(where: { $0.id == deviceID && $0.isConnected }) else { return }
+                let info = try? await Task.detached(priority: .utility) {
+                    try Usbmux.deviceInfo(udid: udid)
+                }.value
+                if let info {
+                    apply(info, toDeviceID: deviceID)
+                    return
+                }
+            }
+            logger.debug("No lockdown details for device \(deviceID)")
+        }
+    }
+
+    private func apply(_ info: LockdownDeviceInfo, toDeviceID deviceID: UInt64) {
+        guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
+        devices[index].lockdownInfo = info
+        if let productType = info.productType {
+            devices[index].modelInfo = ModelDatabase.shared.model(identifier: productType)
         }
     }
 

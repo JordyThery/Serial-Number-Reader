@@ -3,33 +3,102 @@ import os
 
 // MARK: - Configuration & errors
 
+/// A Jamf Platform API gateway region. Tokens are region-locked, so the
+/// token and every request must go to the same regional host.
+nonisolated enum PlatformRegion: String, CaseIterable, Identifiable, Sendable {
+    case eu, us, apac
+
+    var id: Self { self }
+    var label: String {
+        switch self {
+        case .eu: "Europe (EU)"
+        case .us: "United States (US)"
+        case .apac: "Asia Pacific (APAC)"
+        }
+    }
+
+    var gatewayURL: URL {
+        URL(string: "https://\(rawValue).api.jamfcloud.com")!
+    }
+}
+
 /// How to authenticate against Jamf Pro.
 nonisolated enum JamfCredentials: Sendable, Equatable {
-    /// OAuth client credentials (API roles and clients).
+    /// OAuth client credentials (Jamf Pro API roles and clients).
     case clientCredentials(clientID: String, clientSecret: String)
     /// "Classic" Jamf Pro user account (Basic auth → bearer token).
     case basic(username: String, password: String)
+    /// Jamf Platform API integration from Jamf Account, scoped to a platform
+    /// environment (the scope Jamf recommends; tenant scope is not offered).
+    case platform(region: PlatformRegion, clientID: String, clientSecret: String, environmentID: String)
 }
 
 nonisolated struct JamfConfiguration: Sendable, Equatable {
-    let baseURL: URL
+    /// Base for API paths such as `v2/mobile-devices/detail`:
+    /// `https://server/api` for Jamf Pro, `https://{region}.api.jamfcloud.com/pro`
+    /// for the Platform API gateway.
+    let apiBaseURL: URL
+    let tokenURL: URL
+    /// The Jamf Pro web interface, for "Open in Jamf Pro" links. Optional for
+    /// the Platform API, which doesn't expose the instance's address.
+    let webBaseURL: URL?
     let credentials: JamfCredentials
 
-    /// Builds a configuration from raw settings values, or nil when incomplete.
+    var isPlatform: Bool {
+        if case .platform = credentials { return true }
+        return false
+    }
+
+    /// Request headers that identify the context; the gateway serves every
+    /// customer in a region from one host.
+    var contextHeaders: [String: String] {
+        if case .platform(_, _, _, let environmentID) = credentials {
+            return ["X-Environment-Id": environmentID]
+        }
+        return [:]
+    }
+
+    /// Builds a configuration from raw settings values, or nil when incomplete
+    /// or invalid. For the Platform API, `urlString` is the optional Jamf Pro
+    /// address used only for links.
     static func make(urlString: String, credentials: JamfCredentials) -> JamfConfiguration? {
+        let serverURL = normalizedURL(urlString)
         switch credentials {
         case .clientCredentials(let id, let secret):
-            guard !id.isEmpty, !secret.isEmpty else { return nil }
+            guard !id.isEmpty, !secret.isEmpty, let serverURL else { return nil }
+            return JamfConfiguration(
+                apiBaseURL: serverURL.appending(path: "api"),
+                tokenURL: serverURL.appending(path: "api/oauth/token"),
+                webBaseURL: serverURL, credentials: credentials)
         case .basic(let username, let password):
-            guard !username.isEmpty, !password.isEmpty else { return nil }
+            guard !username.isEmpty, !password.isEmpty, let serverURL else { return nil }
+            return JamfConfiguration(
+                apiBaseURL: serverURL.appending(path: "api"),
+                tokenURL: serverURL.appending(path: "api/v1/auth/token"),
+                webBaseURL: serverURL, credentials: credentials)
+        case .platform(let region, let id, let secret, let environmentID):
+            guard !id.isEmpty, !secret.isEmpty, isValidEnvironmentID(environmentID) else { return nil }
+            return JamfConfiguration(
+                apiBaseURL: region.gatewayURL.appending(path: "pro"),
+                tokenURL: region.gatewayURL.appending(path: "auth/token"),
+                webBaseURL: serverURL, credentials: credentials)
         }
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        var normalized = trimmed
+    }
+
+    /// Environment IDs are UUIDs, copied from the integration in Jamf Account.
+    static func isValidEnvironmentID(_ value: String) -> Bool {
+        UUID(uuidString: value) != nil
+    }
+
+    /// `yourorg.jamfcloud.com` → `https://yourorg.jamfcloud.com`; nil if empty
+    /// or not a URL with a host.
+    static func normalizedURL(_ string: String) -> URL? {
+        var normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
         if !normalized.contains("://") { normalized = "https://" + normalized }
         while normalized.hasSuffix("/") { normalized.removeLast() }
         guard let url = URL(string: normalized), url.host() != nil else { return nil }
-        return JamfConfiguration(baseURL: url, credentials: credentials)
+        return url
     }
 }
 
@@ -87,8 +156,9 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
 
 // MARK: - Client
 
-/// Jamf Pro API client using OAuth client credentials. The access token is
-/// cached and refreshed shortly before expiry.
+/// Jamf Pro API client, reached directly or through the Jamf Platform API
+/// gateway (same endpoints and schemas). The access token is cached and
+/// refreshed shortly before expiry.
 actor JamfClient {
 
     private let config: JamfConfiguration
@@ -133,9 +203,14 @@ actor JamfClient {
         return value
     }
 
-    /// Fetches a token; used by Settings to validate credentials.
+    /// Validates the configuration; used by Settings. For the Platform API a
+    /// token alone doesn't prove the environment ID is right, so it also makes
+    /// one cheap request through the environment.
     func testConnection() async throws {
         _ = try await validToken(forceRefresh: true)
+        if config.isPlatform {
+            _ = try await authorizedGET(path: "v1/jamf-pro-version", queryItems: [])
+        }
     }
 
     // MARK: Token handling
@@ -150,14 +225,19 @@ actor JamfClient {
             token = try await fetchOAuthToken(clientID: clientID, clientSecret: clientSecret)
         case .basic(let username, let password):
             token = try await fetchBasicAuthToken(username: username, password: password)
+        case .platform(_, let clientID, let clientSecret, _):
+            // Same OAuth client-credentials exchange, against the regional
+            // gateway; tokens last 900 s and are renewed like any other.
+            token = try await fetchOAuthToken(clientID: clientID, clientSecret: clientSecret)
         }
         cachedToken = token
         return token.value
     }
 
-    /// OAuth client credentials: POST /api/oauth/token (form-encoded).
+    /// OAuth client credentials (form-encoded): `/api/oauth/token` on Jamf Pro,
+    /// `/auth/token` on the Platform API gateway.
     private func fetchOAuthToken(clientID: String, clientSecret: String) async throws -> (value: String, expiry: Date) {
-        var request = URLRequest(url: config.baseURL.appending(path: "api/oauth/token"))
+        var request = URLRequest(url: config.tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var form = URLComponents()
@@ -183,7 +263,7 @@ actor JamfClient {
     /// Classic user account: POST /api/v1/auth/token with Basic auth.
     /// Returns a bearer token (default lifetime 30 minutes).
     private func fetchBasicAuthToken(username: String, password: String) async throws -> (value: String, expiry: Date) {
-        var request = URLRequest(url: config.baseURL.appending(path: "api/v1/auth/token"))
+        var request = URLRequest(url: config.tokenURL)
         request.httpMethod = "POST"
         let basic = Data("\(username):\(password)".utf8).base64EncodedString()
         request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
@@ -206,8 +286,12 @@ actor JamfClient {
     private func performTokenRequest(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await perform(request)
         guard response.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
             logger.error("Token request failed: HTTP \(response.statusCode)")
+            if config.isPlatform, (400...401).contains(response.statusCode) {
+                throw JamfError.authenticationFailed(
+                    "HTTP \(response.statusCode) — check the client ID, secret and region. Jamf Account integrations expire after six months.")
+            }
+            let body = String(data: data, encoding: .utf8) ?? ""
             throw JamfError.authenticationFailed("HTTP \(response.statusCode) \(body.prefix(200))")
         }
         return data
@@ -238,7 +322,7 @@ actor JamfClient {
     ) async throws -> Data {
         let token = try await validToken()
         var components = URLComponents(
-            url: config.baseURL.appending(path: path),
+            url: config.apiBaseURL.appending(path: path),
             resolvingAgainstBaseURL: false
         )
         if !queryItems.isEmpty { components?.queryItems = queryItems }
@@ -248,6 +332,9 @@ actor JamfClient {
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        for (header, value) in config.contextHeaders {
+            request.setValue(value, forHTTPHeaderField: header)
+        }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -264,6 +351,11 @@ actor JamfClient {
             switch response.statusCode {
             case 401:
                 throw JamfError.authenticationFailed("HTTP 401 — check the credentials and their Jamf Pro privileges")
+            case 400 where config.isPlatform
+                && String(decoding: data, as: UTF8.self).contains("INVALID_REQUEST_CONTEXT_ID"):
+                throw JamfError.httpError(400, "the environment ID doesn't belong to this integration — copy it from the integration's details in Jamf Account")
+            case 403 where config.isPlatform:
+                throw JamfError.httpError(403, "check that the integration is scoped to this platform environment and has the devices:read permission (devices:update to edit asset tags)")
             case 403:
                 throw JamfError.httpError(403, "the account lacks the privilege for this action")
             default:
@@ -276,16 +368,17 @@ actor JamfClient {
     // MARK: Asset tag updates
 
     /// Writes a new asset tag to the Jamf Pro record. Requires the
-    /// "Update Mobile Devices" / "Update Computers" privilege.
+    /// "Update Mobile Devices" / "Update Computers" privilege, or
+    /// `devices:update` on the Platform API.
     func updateAssetTag(_ assetTag: String, kind: JamfDeviceRecord.Kind, jamfID: String) async throws {
         let path: String
         let body: [String: Any]
         switch kind {
         case .mobileDevice:
-            path = "api/v2/mobile-devices/\(jamfID)"
+            path = "v2/mobile-devices/\(jamfID)"
             body = ["assetTag": assetTag]
         case .computer:
-            path = "api/v1/computers-inventory-detail/\(jamfID)"
+            path = "v1/computers-inventory-detail/\(jamfID)"
             body = ["general": ["assetTag": assetTag]]
         }
         let data = try JSONSerialization.data(withJSONObject: body)
@@ -327,7 +420,7 @@ actor JamfClient {
 
     private func lookupMobileDevice(filter: String) async throws -> JamfDeviceRecord {
         let data = try await authorizedGET(
-            path: "api/v2/mobile-devices/detail",
+            path: "v2/mobile-devices/detail",
             queryItems: [
                 URLQueryItem(name: "section", value: "GENERAL"),
                 URLQueryItem(name: "section", value: "HARDWARE"),
@@ -405,7 +498,7 @@ actor JamfClient {
 
     private func lookupComputer(serial: String) async throws -> JamfDeviceRecord {
         let data = try await authorizedGET(
-            path: "api/v1/computers-inventory",
+            path: "v1/computers-inventory",
             queryItems: [
                 URLQueryItem(name: "section", value: "GENERAL"),
                 URLQueryItem(name: "section", value: "HARDWARE"),

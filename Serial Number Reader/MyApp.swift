@@ -30,10 +30,23 @@ struct SerialNumberReaderApp: App {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updates.checkManually() }
             }
+            CommandGroup(replacing: .importExport) {
+                Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
+                    .keyboardShortcut("e")
+                    .disabled(monitor.devices.isEmpty)
+                Button("Copy All Serial Numbers") { SessionExport.copySerials(rows: sessionRows) }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .disabled(SessionExport.serials(sessionRows).isEmpty)
+            }
         }
 
         Settings {
             SettingsView(jamf: jamf)
         }
+    }
+
+    /// The device list in connection order (oldest first), as export rows.
+    private var sessionRows: [SessionExport.Row] {
+        monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0)) }
     }
 }

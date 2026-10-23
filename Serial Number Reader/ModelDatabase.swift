@@ -53,4 +53,11 @@ nonisolated final class ModelDatabase: Sendable {
         guard let identifier = boards[key] else { return nil }
         return ModelInfo(identifier: identifier, marketingName: models[identifier])
     }
+
+    /// Resolves a model identifier reported by a booted device (e.g.
+    /// "iPad16,1"). The marketing name is nil when the identifier is newer
+    /// than the bundled data; the identifier is still shown in that case.
+    func model(identifier: String) -> ModelInfo {
+        ModelInfo(identifier: identifier, marketingName: models[identifier])
+    }
 }

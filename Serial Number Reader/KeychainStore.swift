@@ -1,13 +1,15 @@
 import Foundation
 import Security
 
-/// Minimal Keychain wrapper for Jamf credentials (OAuth client secret or
-/// account password). Secrets are never written to UserDefaults.
+/// Minimal Keychain wrapper for Jamf credentials (Jamf Pro client secret,
+/// account password, Platform API client secret). Secrets are never written
+/// to UserDefaults.
 nonisolated enum KeychainStore {
 
     enum Account: String {
         case clientSecret
         case password = "jamfPassword"
+        case platformClientSecret = "jamfPlatformClientSecret"
     }
 
     private static let service = "be.jordythery.SerialNumberReader.jamf"

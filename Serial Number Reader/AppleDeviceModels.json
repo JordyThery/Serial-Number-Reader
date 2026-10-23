@@ -178,6 +178,7 @@
     "8152:24": "Mac18,5",
     "8160:0A": "iPhone19,2",
     "8160:0C": "iPhone19,3",
+    "8160:0E": "iPhone19,4",
     "8160:12": "iPhone19,7"
   },
   "models": {
@@ -348,6 +349,7 @@
     "iPhone18,5": "iPhone 17e",
     "iPhone19,2": "iPhone 18 Pro",
     "iPhone19,3": "iPhone 18 Pro Max (US)",
+    "iPhone19,4": "iPhone Duo",
     "iPhone19,7": "iPhone 18 Pro Max"
   }
 }

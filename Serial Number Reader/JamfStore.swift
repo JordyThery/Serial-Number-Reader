@@ -25,12 +25,14 @@ final class JamfStore {
     enum AuthMethod: String, CaseIterable, Identifiable {
         case clientCredentials
         case basic
+        case platform
 
         var id: Self { self }
         var label: String {
             switch self {
             case .clientCredentials: "API Client (OAuth)"
             case .basic: "Username & Password (Classic)"
+            case .platform: "Jamf Platform API"
             }
         }
     }
@@ -40,6 +42,9 @@ final class JamfStore {
         static let clientID = "jamfClientID"
         static let username = "jamfUsername"
         static let authMethod = "jamfAuthMethod"
+        static let platformRegion = "jamfPlatformRegion"
+        static let platformClientID = "jamfPlatformClientID"
+        static let platformEnvironmentID = "jamfPlatformEnvironmentID"
     }
 
     var serverURLString: String {
@@ -86,6 +91,36 @@ final class JamfStore {
         }
     }
 
+    var platformRegion: PlatformRegion {
+        didSet {
+            UserDefaults.standard.set(platformRegion.rawValue, forKey: DefaultsKey.platformRegion)
+            invalidateClient()
+        }
+    }
+
+    var platformClientID: String {
+        didSet {
+            UserDefaults.standard.set(platformClientID, forKey: DefaultsKey.platformClientID)
+            invalidateClient()
+        }
+    }
+
+    /// Backed by the Keychain — never stored in UserDefaults.
+    var platformClientSecret: String {
+        didSet {
+            KeychainStore.save(platformClientSecret, account: .platformClientSecret)
+            invalidateClient()
+        }
+    }
+
+    /// Not a secret: it identifies the environment, like a server address.
+    var platformEnvironmentID: String {
+        didSet {
+            UserDefaults.standard.set(platformEnvironmentID, forKey: DefaultsKey.platformEnvironmentID)
+            invalidateClient()
+        }
+    }
+
     private(set) var lookupStates: [JamfQuery: JamfLookupState] = [:]
     /// Bumped (debounced) whenever the configuration changes; the UI observes
     /// it to re-run lookups, and in-flight results from an older generation
@@ -105,20 +140,41 @@ final class JamfStore {
         clientSecret = KeychainStore.load(account: .clientSecret) ?? ""
         username = UserDefaults.standard.string(forKey: DefaultsKey.username) ?? ""
         password = KeychainStore.load(account: .password) ?? ""
+        platformRegion = UserDefaults.standard.string(forKey: DefaultsKey.platformRegion)
+            .flatMap(PlatformRegion.init(rawValue:)) ?? .eu
+        platformClientID = UserDefaults.standard.string(forKey: DefaultsKey.platformClientID) ?? ""
+        platformClientSecret = KeychainStore.load(account: .platformClientSecret) ?? ""
+        platformEnvironmentID = UserDefaults.standard.string(forKey: DefaultsKey.platformEnvironmentID) ?? ""
     }
 
     var configuration: JamfConfiguration? {
         let credentials: JamfCredentials = switch authMethod {
-        case .clientCredentials: .clientCredentials(clientID: clientID, clientSecret: clientSecret)
-        case .basic: .basic(username: username, password: password)
+        case .clientCredentials:
+            .clientCredentials(clientID: clientID, clientSecret: clientSecret)
+        case .basic:
+            .basic(username: username, password: password)
+        case .platform:
+            .platform(
+                region: platformRegion,
+                clientID: platformClientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                clientSecret: platformClientSecret,
+                environmentID: platformEnvironmentID.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return JamfConfiguration.make(urlString: serverURLString, credentials: credentials)
     }
 
     var isConfigured: Bool { configuration != nil }
 
-    /// Base URL for "Open in Jamf Pro" links.
-    var baseURL: URL? { configuration?.baseURL }
+    /// Base URL for "Open in Jamf Pro" links; nil when unknown (Platform API
+    /// without the optional Jamf Pro URL).
+    var webBaseURL: URL? { configuration?.webBaseURL }
+
+    /// Whether the Environment ID field holds something that looks like an ID;
+    /// an empty field is not flagged as an error.
+    var platformEnvironmentIDLooksValid: Bool {
+        let trimmed = platformEnvironmentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || JamfConfiguration.isValidEnvironmentID(trimmed)
+    }
 
     private func invalidateClient() {
         client = nil
@@ -227,7 +283,10 @@ final class JamfStore {
     /// Validates the current credentials by requesting a fresh token.
     func testConnection() async -> Result<Void, JamfError> {
         guard let configuration else {
-            return .failure(.authenticationFailed("Fill in the server URL and credentials first"))
+            let missing = authMethod == .platform
+                ? "Fill in the client ID, client secret and a valid environment ID first"
+                : "Fill in the server URL and credentials first"
+            return .failure(.authenticationFailed(missing))
         }
         do {
             try await JamfClient(config: configuration).testConnection()

@@ -26,8 +26,12 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     let descriptor: ParsedDescriptor?
     /// Normalised UDID (Normal mode only).
     let udid: String?
-    /// Model resolved from CPID/BDID (Recovery/DFU only).
-    let modelInfo: ModelInfo?
+    /// Model resolved from CPID/BDID (Recovery/DFU) or from the model
+    /// identifier a booted device reports.
+    var modelInfo: ModelInfo?
+    /// Values read from a booted device before pairing (Normal mode only);
+    /// nil until read, or when the device didn't answer.
+    var lockdownInfo: LockdownDeviceInfo? = nil
     let connectedAt: Date
     /// False once the device has been unplugged; the entry stays in the list
     /// (cached) until the user removes it.

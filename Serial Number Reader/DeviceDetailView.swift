@@ -53,6 +53,12 @@ struct DeviceDetailView: View {
             if let identifier = device.modelInfo?.identifier {
                 LabeledContent("Model Identifier", value: identifier)
             }
+            if let os = device.lockdownInfo?.osDisplayName {
+                LabeledContent("OS Version", value: os)
+            }
+            if let name = device.lockdownInfo?.deviceName {
+                LabeledContent("Device Name", value: name)
+            }
             if let name = device.usbProductName {
                 LabeledContent("USB Product Name", value: name)
             }
@@ -328,7 +334,7 @@ struct DeviceDetailView: View {
         }
 
         HStack {
-            if let baseURL = jamf.baseURL, let url = record.webURL(baseURL: baseURL) {
+            if let baseURL = jamf.webBaseURL, let url = record.webURL(baseURL: baseURL) {
                 Link(destination: url) {
                     Label("Open in Jamf Pro", systemImage: "arrow.up.forward.app")
                 }

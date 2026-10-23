@@ -1,12 +1,57 @@
 import Foundation
 
-/// Minimal usbmuxd + lockdownd client, used for exactly one job: asking a
-/// normally booted iPhone/iPad to reboot into Recovery mode.
+/// Values a booted device reports before pairing. The serial number, model
+/// number and region are refused ("GetProhibited") without a pairing.
+nonisolated struct LockdownDeviceInfo: Equatable, Sendable {
+    /// Model identifier, e.g. "iPad16,1".
+    let productType: String?
+    /// OS version, e.g. "27.0".
+    let productVersion: String?
+    /// OS build, e.g. "24A5430a".
+    let buildVersion: String?
+    /// "iPhone", "iPad", …
+    let deviceClass: String?
+    /// The name set on the device (user-editable).
+    let deviceName: String?
+
+    /// Parses the dictionary returned by an unpaired `GetValue` request.
+    static func parse(_ values: [String: Any]) -> LockdownDeviceInfo {
+        func string(_ key: String) -> String? {
+            guard let value = values[key] as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return LockdownDeviceInfo(
+            productType: string("ProductType"),
+            productVersion: string("ProductVersion"),
+            buildVersion: string("BuildVersion"),
+            deviceClass: string("DeviceClass"),
+            deviceName: string("DeviceName")
+        )
+    }
+
+    /// "iPadOS 27.0 (24A5430a)". `ProductName` reports "iPhone OS" for every
+    /// device, so the OS name is derived from the device class instead.
+    var osDisplayName: String? {
+        guard let productVersion else { return nil }
+        let os = switch deviceClass {
+        case "iPad": "iPadOS"
+        case "iPhone", "iPod": "iOS"
+        default: "OS"
+        }
+        let build = buildVersion.map { " (\($0))" } ?? ""
+        return "\(os) \(productVersion)\(build)"
+    }
+}
+
+/// Minimal usbmuxd + lockdownd client for a normally booted iPhone/iPad:
+/// reading the values it reports before pairing, and asking it to reboot into
+/// Recovery mode.
 ///
-/// Protocol: connect to the `usbmuxd` Unix socket, list attached devices,
-/// open a tunnel to the device's lockdownd (port 62078), and send an
-/// `EnterRecovery` request. No pairing, trust, or privileges are required —
-/// this is the same mechanism `ideviceenterrecovery` uses.
+/// Protocol: connect to the `usbmuxd` Unix socket, list attached devices, open
+/// a tunnel to the device's lockdownd (port 62078), and send one request. No
+/// pairing session is started, so no trust or privileges are required — the
+/// same mechanism `ideviceinfo -s` and `ideviceenterrecovery` use.
 nonisolated enum Usbmux {
 
     enum Failure: LocalizedError {
@@ -32,6 +77,44 @@ nonisolated enum Usbmux {
     /// Blocking — call off the main thread. On success the device disconnects
     /// and reappears in Recovery mode on its own.
     static func enterRecovery(udid: String) throws {
+        try withLockdown(udid: udid) { fd in
+            try lockdownSend(fd, [
+                "Label": "SerialNumberReader",
+                "Request": "EnterRecovery",
+            ])
+            let reply = try lockdownReceive(fd)
+            if let error = reply["Error"] as? String {
+                throw Failure.lockdownError(error)
+            }
+            guard (reply["Request"] as? String) == "EnterRecovery" else {
+                throw Failure.protocolError("unexpected lockdown reply: \(reply)")
+            }
+        }
+    }
+
+    /// Reads the values the device reports without pairing (model, OS
+    /// version, name). Blocking — call off the main thread.
+    static func deviceInfo(udid: String) throws -> LockdownDeviceInfo {
+        try withLockdown(udid: udid) { fd in
+            // GetValue without a key returns every value allowed unpaired.
+            try lockdownSend(fd, [
+                "Label": "SerialNumberReader",
+                "Request": "GetValue",
+            ])
+            let reply = try lockdownReceive(fd)
+            if let error = reply["Error"] as? String {
+                throw Failure.lockdownError(error)
+            }
+            guard let values = reply["Value"] as? [String: Any] else {
+                throw Failure.protocolError("GetValue reply without values")
+            }
+            return LockdownDeviceInfo.parse(values)
+        }
+    }
+
+    /// Opens a usbmux tunnel to the lockdownd of the USB device with this
+    /// UDID and runs `body` on it.
+    private static func withLockdown<T>(udid: String, _ body: (Int32) throws -> T) throws -> T {
         let fd = try openSocket()
         defer { close(fd) }
 
@@ -70,17 +153,7 @@ nonisolated enum Usbmux {
         }
 
         // 3. From here the socket is a raw pipe to lockdownd.
-        try lockdownSend(fd, [
-            "Label": "SerialNumberReader",
-            "Request": "EnterRecovery",
-        ])
-        let reply = try lockdownReceive(fd)
-        if let error = reply["Error"] as? String {
-            throw Failure.lockdownError(error)
-        }
-        guard (reply["Request"] as? String) == "EnterRecovery" else {
-            throw Failure.protocolError("unexpected lockdown reply: \(reply)")
-        }
+        return try body(fd)
     }
 
     // MARK: - Socket plumbing

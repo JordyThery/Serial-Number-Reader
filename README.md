@@ -9,10 +9,11 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 ## Features
 
 - **Live USB detection** of Apple devices in Normal, Recovery and DFU mode, using IOKit (no private device frameworks, no `libimobiledevice`).
-- **Normal mode** — reads the device UDID (no pairing or trust prompt) and resolves it in Jamf Pro.
+- **Normal mode** — reads the device UDID, model, OS version and device name (no pairing or trust needed) and resolves the device in Jamf Pro.
 - **Recovery mode** — reads the serial number and ECID directly from the USB descriptor; model is resolved from the CPID/BDID pair.
 - **DFU mode** — detects the device and shows the model-specific button sequence to reach Recovery (current devices expose no identifiers over USB in DFU).
-- **Jamf Pro lookup** by serial or UDID, showing device name, serial, UDID, model, OS version, managed state, assigned user and last inventory date — with an **editable asset tag** and a link to the record.
+- **Jamf Pro lookup** by serial or UDID — directly or through the **Jamf Platform API** — showing device name, serial, UDID, model, OS version, managed state, assigned user and last inventory date, with an **editable asset tag** and a link to the record.
+- **Session export** — save every device from the session as CSV (**File → Export Session…**), or copy all serial numbers at once.
 - **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU any USB-C device over any port, even when it's unresponsive.
 - **Copy buttons** and a scannable **QR code** for the serial number.
 
@@ -41,7 +42,12 @@ Enter Recovery and Boot to Normal need no privileges; Restart and Enter DFU use 
 
 ### Jamf Pro
 
-Open **Settings** and enter your Jamf Pro server URL and credentials — either an **API client** (OAuth client credentials) or a **classic username/password** account. Credentials are stored in the macOS Keychain; the URL and client ID are the only values kept in preferences. The account needs read access to mobile devices and computers (and update access to edit asset tags).
+Open **Settings** and choose how to connect:
+
+- **API Client (OAuth)** or **Username & Password (Classic)** — enter your Jamf Pro server URL and credentials. The account needs read access to mobile devices and computers (and update access to edit asset tags).
+- **Jamf Platform API** — create an integration in [Jamf Account](https://account.jamf.com) scoped to a **platform environment**, with the `devices:read` permission (plus `devices:update` to edit asset tags). Enter its region, client ID, client secret and environment ID. The Jamf Pro URL is optional and only used for "Open in Jamf Pro" links. Integrations expire after six months.
+
+Secrets are stored in the macOS Keychain, never in preferences.
 
 ### Device model data
 
@@ -58,7 +64,9 @@ The app runs outside the App Sandbox: it needs direct IOKit access for USB enume
 - `USBDeviceMonitor` — wraps IOKit USB arrival/removal notifications and publishes an observable device list; the UI consumes only this.
 - `DescriptorParser` — pure, unit-tested parsing of the Recovery/DFU USB serial descriptor and UDID normalisation.
 - `ModelDatabase` — loads the bundled CPID/BDID model map.
-- `JamfClient` / `JamfStore` — async Jamf Pro API client (token caching, serial/UDID lookup, asset-tag update) and its UI-facing state.
+- `JamfClient` / `JamfStore` — async Jamf Pro API client, direct or through the Platform API gateway (token caching, serial/UDID lookup, asset-tag update), and its UI-facing state.
+- `Usbmux` — minimal usbmuxd/lockdown client: unpaired device details and Enter Recovery.
+- `SessionExport` — CSV export and serial list built from the session's device list.
 - `VDMTool` / `VDMController` — USB-PD vendor-defined-message power actions via `AppleHPM`.
 
 ## Credits

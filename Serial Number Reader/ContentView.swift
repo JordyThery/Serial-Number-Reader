@@ -105,6 +105,13 @@ struct DeviceRow: View {
                     Text(device.modelDisplayName)
                         .font(.headline)
                         .lineLimit(1)
+                    if let os = device.lockdownInfo?.productVersion {
+                        Text(osShortName + " " + os)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                     ModeBadge(mode: device.mode)
                     if !device.isConnected {
                         Text("Disconnected")
@@ -169,7 +176,17 @@ struct DeviceRow: View {
         }
     }
 
+    private var osShortName: String {
+        device.lockdownInfo?.deviceClass == "iPad" ? "iPadOS" : "iOS"
+    }
+
     private var iconName: String {
+        // A booted device reports its class; trust that over name heuristics.
+        switch device.lockdownInfo?.deviceClass {
+        case "iPad": return "ipad"
+        case "iPhone", "iPod": return "iphone"
+        default: break
+        }
         if device.modelInfo?.identifier.hasPrefix("Mac") == true { return "laptopcomputer" }
         if device.modelDisplayName.localizedCaseInsensitiveContains("ipad") { return "ipad" }
         // Opaque DFU devices expose no identifiers — don't imply a device type.
