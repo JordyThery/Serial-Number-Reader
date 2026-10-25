@@ -43,8 +43,8 @@ struct SessionExportTests {
 
     @Test("Plain fields are written as-is")
     func plain() {
-        #expect(SessionExport.escape("DKX70W9NW5") == "DKX70W9NW5")
-        #expect(SessionExport.escape("00008150-000213240C8A401C") == "00008150-000213240C8A401C")
+        #expect(SessionExport.escape("F2LXK1ABCD6M") == "F2LXK1ABCD6M")
+        #expect(SessionExport.escape("00008150-001A2B3C4D5E6F70") == "00008150-001A2B3C4D5E6F70")
     }
 
     @Test("Commas, quotes and line breaks are quoted per RFC 4180")

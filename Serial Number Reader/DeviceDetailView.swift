@@ -9,6 +9,9 @@ struct DeviceDetailView: View {
     /// targets a port, not a specific device) and errors survive selection
     /// changes.
     let actions: DeviceActionController
+    /// Shared app-wide: one Restore or Revive at a time.
+    let restore: RestoreController
+    let monitor: USBDeviceMonitor
     /// Number of currently connected devices; the VDM actions are offered
     /// only while exactly one device is attached, because the command goes
     /// to the first connected port, not to the selected device.
@@ -17,6 +20,8 @@ struct DeviceDetailView: View {
     /// Raw descriptor fields are collapsed by default — they're diagnostic
     /// detail and take a lot of vertical space.
     @State private var descriptorFieldsExpanded = false
+    @State private var showingRestore = false
+    @State private var showingRevive = false
 
     var body: some View {
         Form {
@@ -40,7 +45,21 @@ struct DeviceDetailView: View {
         }
         .formStyle(.grouped)
         .navigationSubtitle(device.modelDisplayName)
+        .task { monitor.refreshTrust(deviceID: device.id) }
+        .sheet(isPresented: $showingRestore) {
+            RestoreSheet(device: device, serialNumber: knownSerial, jamfName: jamfRecord?.name, restore: restore)
+        }
+        .sheet(isPresented: $showingRevive) {
+            ReviveSheet(device: device, serialNumber: knownSerial, jamfName: jamfRecord?.name, restore: restore)
+        }
     }
+
+    private var jamfRecord: JamfDeviceRecord? {
+        if case .found(let record) = jamf.state(for: device) { return record }
+        return nil
+    }
+
+    private var knownSerial: String? { device.serialNumber ?? jamfRecord?.serialNumber }
 
     // MARK: Device
 
@@ -66,7 +85,11 @@ struct DeviceDetailView: View {
         }
     }
 
-    // MARK: Power (USB-PD VDM actions)
+    // MARK: Power and restore actions
+
+    /// Any action — or a Restore/Revive — in progress blocks the others: they
+    /// would interrupt each other.
+    private var isBusy: Bool { actions.runningAction != nil || restore.isRunning }
 
     private var powerSection: some View {
         Section {
@@ -77,8 +100,8 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Enter Recovery", systemImage: "arrow.counterclockwise")
                     }
-                    .disabled(actions.runningAction != nil)
-                    .help("Reboot this device into Recovery mode — no button presses or password needed")
+                    .disabled(isBusy)
+                    .help("Reboot this device into Recovery mode, where its serial number is readable — no button presses or password needed")
                 }
 
                 if device.mode == .recovery {
@@ -87,7 +110,7 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Boot to Normal", systemImage: "power")
                     }
-                    .disabled(actions.runningAction != nil)
+                    .disabled(isBusy)
                     .help("Reboot this device out of Recovery into normal operation")
                 }
 
@@ -96,7 +119,7 @@ struct DeviceDetailView: View {
                 } label: {
                     Label("Restart", systemImage: "restart")
                 }
-                .disabled(actions.runningAction != nil || vdmUnavailable)
+                .disabled(isBusy || vdmUnavailable)
                 .help(vdmUnavailable
                       ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
                       : "Force-restart via USB-C power delivery — requires an administrator password")
@@ -107,7 +130,7 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
-                    .disabled(actions.runningAction != nil || vdmUnavailable)
+                    .disabled(isBusy || vdmUnavailable)
                     .help(vdmUnavailable
                           ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
                           : "Reboot into DFU mode via USB-C power delivery — requires an administrator password")
@@ -117,6 +140,45 @@ struct DeviceDetailView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
+            }
+
+            if device.mode != .normal {
+                HStack(spacing: 10) {
+                    Button {
+                        showingRestore = true
+                    } label: {
+                        Label("Restore…", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(isBusy || restoreUnavailableReason != nil)
+                    .help(restoreUnavailableReason ?? "Erase the device and install the latest or a specific version of its operating system")
+
+                    Button {
+                        showingRevive = true
+                    } label: {
+                        Label("Revive…", systemImage: "cross.case")
+                    }
+                    .disabled(isBusy || restoreUnavailableReason != nil)
+                    .help(restoreUnavailableReason ?? "Reinstall the operating system and keep the device's content")
+                    Spacer()
+                }
+            } else if device.isTrusted {
+                HStack {
+                    Button {
+                        let deviceID = device.id
+                        actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) }
+                    } label: {
+                        Label("Remove Trust", systemImage: "lock.open.trianglebadge.exclamationmark")
+                    }
+                    .disabled(isBusy || !Configurator.isAvailable)
+                    .help(Configurator.isAvailable
+                          ? "Remove the pairing between this Mac and the device, on both sides"
+                          : "Requires Apple Configurator (free, App Store)")
+                    Spacer()
+                }
+            }
+
+            if actions.trustRequiredDeviceID == device.id {
+                trustGuidance
             }
 
             if let error = actions.lastError {
@@ -133,6 +195,32 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// Shown when the device refused Enter Recovery because it doesn't trust
+    /// this Mac (iOS 27 and later).
+    private var trustGuidance: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("On iOS 27 and later, Enter Recovery only works from a Mac this device trusts.",
+                  systemImage: "lock.shield")
+                .font(.callout.weight(.semibold))
+            Text("Unlock the device, tap Trust and enter its passcode, then click Enter Recovery again. Or enter Recovery mode with the buttons:")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text(RecoveryModeInstructions.instructions(forModelIdentifier: device.modelInfo?.identifier))
+                .font(.callout)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Why Restore and Revive can't run for this device, or nil when they can.
+    private var restoreUnavailableReason: String? {
+        if !Configurator.isAvailable { return "Requires Apple Configurator (free, App Store)" }
+        if device.configuratorECID == nil {
+            return "Apple Configurator hasn't identified this device yet"
+        }
+        return nil
+    }
+
     /// The USB-PD command goes to the first connected port, so with several
     /// devices attached it could hit the wrong one — offer it only for one.
     private var vdmUnavailable: Bool { connectedDeviceCount > 1 }
@@ -140,11 +228,11 @@ struct DeviceDetailView: View {
     private var powerFooterText: String {
         var text = switch device.mode {
         case .normal:
-            "Enter Recovery asks the device to reboot into Recovery mode — the serial number then appears here automatically, no buttons needed. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+            "Enter Recovery asks the device to reboot into Recovery mode — the serial number then appears here automatically. On iOS 27 and later the device must trust this Mac. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
         case .recovery:
-            "Boot to Normal sends “auto-boot true” and reboots the device out of Recovery. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+            "Boot to Normal reboots the device out of Recovery. Restore erases the device and installs a new operating system; Revive reinstalls it and keeps the content — both through Apple Configurator. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
         case .dfu:
-            "Restart sends a USB-C power-delivery command over any port — it works even in DFU — and prompts for an administrator password."
+            "Restore erases the device and installs a new operating system; Revive reinstalls it and keeps the content — both through Apple Configurator. Restart sends a USB-C power-delivery command over any port, even in DFU, and prompts for an administrator password."
         }
         if vdmUnavailable {
             text += " Restart and Enter DFU are disabled while more than one device is connected, because the command targets a port rather than a specific device."
@@ -163,16 +251,16 @@ struct DeviceDetailView: View {
                     Text("Not reported — the descriptor contains no SRNM field")
                         .foregroundStyle(.secondary)
                 }
-            } else if device.mode == .dfu {
+            } else if device.mode == .dfu, device.jamfQuery == nil {
                 LabeledContent("Serial Number") {
                     Text("Not readable in DFU mode")
                         .foregroundStyle(.secondary)
                 }
             } else {
-                normalModeSerialRow
+                jamfSerialRow
             }
 
-            if let udid = device.udid {
+            if let udid = device.displayUDID {
                 CopyableRow(label: "UDID", value: udid)
             }
             if let ecid = device.ecid {
@@ -181,10 +269,11 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// Serial row for a booted device: the serial can only come from Jamf,
-    /// so state exactly why it is or isn't available.
+    /// Serial row when the serial can only come from Jamf (booted devices, and
+    /// DFU devices identified through Configurator), stating exactly why it
+    /// is or isn't available.
     @ViewBuilder
-    private var normalModeSerialRow: some View {
+    private var jamfSerialRow: some View {
         switch jamf.state(for: device) {
         case .found(let record):
             if let serial = record.serialNumber {
@@ -218,14 +307,20 @@ struct DeviceDetailView: View {
     private var dfuSection: some View {
         Section("Exit DFU → Enter Recovery Mode") {
             if device.isOpaqueDFU {
-                Text("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). Only its presence can be detected.")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
+                if device.configurator != nil {
+                    Text("Identified through Apple Configurator. Its serial number isn't available over USB in DFU mode — it comes from Jamf when the device is enrolled, or appears in Recovery mode.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). With Apple Configurator installed, Serial Number Reader identifies it automatically.")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
             }
-            Text("The serial number is only readable in Recovery mode. Follow these steps; the device will reappear here automatically.")
+            Text("The serial number is readable in Recovery mode. Follow these steps; the device will reappear here automatically.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Text(DFUExitInstructions.instructions(forModelIdentifier: device.modelInfo?.identifier))
+            Text(RecoveryModeInstructions.instructions(forModelIdentifier: device.modelInfo?.identifier))
                 .font(.callout)
                 .textSelection(.enabled)
         }

@@ -12,6 +12,8 @@ import os
 ///   device. No privileges required.
 /// - **Boot to Normal** — iBoot `setenv auto-boot true` + `reboot` over USB
 ///   control requests for a Recovery-mode device. No privileges required.
+/// - **Remove Trust** — removes this Mac's pairing with a booted device
+///   through Apple Configurator.
 ///
 /// A single instance is shared app-wide so only one action runs at a time —
 /// the VDM path operates on ports, not on a specific selected device.
@@ -24,12 +26,27 @@ final class DeviceActionController {
         case dfu
         case enterRecovery
         case bootNormal
+        case removeTrust
     }
 
     /// The action currently running, if any (drives button spinners).
     private(set) var runningAction: Action?
     /// Last human-readable error, shown transiently in the UI.
     private(set) var lastError: String?
+    /// The device that refused Enter Recovery because it doesn't trust this
+    /// Mac; the Power section shows trust and button-step guidance for it.
+    private(set) var trustRequiredDeviceID: UInt64?
+
+    /// What an action's work reports back. Created off the main actor.
+    nonisolated private enum Outcome: Sendable {
+        case done
+        case failed(String)
+        case trustRequired(deviceID: UInt64)
+
+        init(errorMessage: String?) {
+            self = errorMessage.map(Outcome.failed) ?? .done
+        }
+    }
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "DeviceActions")
 
@@ -37,23 +54,29 @@ final class DeviceActionController {
 
     /// Force-restarts the connected device via USB-PD (admin prompt).
     func restart() {
-        start(.reboot) { Self.runPrivilegedVDM("reboot") }
+        start(.reboot) { Outcome(errorMessage: Self.runPrivilegedVDM("reboot")) }
     }
 
     /// Reboots the connected device into DFU mode via USB-PD (admin prompt).
     func enterDFU() {
-        start(.dfu) { Self.runPrivilegedVDM("dfu") }
+        start(.dfu) { Outcome(errorMessage: Self.runPrivilegedVDM("dfu")) }
     }
 
-    /// Asks a booted device to reboot into Recovery mode via lockdownd.
+    /// Asks a booted device to reboot into Recovery mode via lockdownd —
+    /// unpaired where allowed, otherwise over the Mac's trusted connection.
     func enterRecovery(device: USBDevice) {
         guard let udid = device.udid else {
             lastError = "No UDID available for this device."
             return
         }
+        let deviceID = device.id
         start(.enterRecovery) {
-            try Usbmux.enterRecovery(udid: udid)
-            return nil
+            do {
+                try Usbmux.enterRecovery(udid: udid)
+                return .done
+            } catch Usbmux.Failure.trustRequired {
+                return .trustRequired(deviceID: deviceID)
+            }
         }
     }
 
@@ -61,31 +84,50 @@ final class DeviceActionController {
     func bootToNormal(device: USBDevice) {
         let entryID = device.id
         start(.bootNormal) {
-            RecoveryCommands.send(
+            Outcome(errorMessage: RecoveryCommands.send(
                 ["setenv auto-boot true", "saveenv", "reboot"],
                 toRegistryEntryID: entryID
-            )
+            ))
+        }
+    }
+
+    /// Removes the pairing between this Mac and a booted device, on both
+    /// sides, through Apple Configurator. `onSuccess` runs on the main actor.
+    func removeTrust(device: USBDevice, onSuccess: @escaping @MainActor () -> Void) {
+        guard let ecid = device.configuratorECID else {
+            lastError = "This device's ECID is unknown, so its trust can't be removed here."
+            return
+        }
+        start(.removeTrust, onSuccess: onSuccess) {
+            try Configurator.unpair(ecid: ecid)
+            return .done
         }
     }
 
     // MARK: - Execution
 
-    /// Runs blocking `work` off the main thread; it returns an error message
-    /// or nil, or throws.
-    private func start(_ action: Action, work: @escaping @Sendable () throws -> String?) {
+    /// Runs blocking `work` off the main thread and publishes its outcome.
+    private func start(_ action: Action, onSuccess: (@MainActor () -> Void)? = nil,
+                       work: @escaping @Sendable () throws -> Outcome) {
         guard runningAction == nil else { return }
         runningAction = action
         lastError = nil
+        trustRequiredDeviceID = nil
         Task {
-            let failure: String?
+            let outcome: Outcome
             do {
-                failure = try await Task.detached(priority: .userInitiated) { try work() }.value
+                outcome = try await Task.detached(priority: .userInitiated) { try work() }.value
             } catch {
-                failure = error.localizedDescription
+                outcome = .failed(error.localizedDescription)
             }
-            if let failure {
-                logger.error("\(String(describing: action), privacy: .public) failed: \(failure, privacy: .public)")
-                lastError = failure
+            switch outcome {
+            case .done:
+                onSuccess?()
+            case .failed(let message):
+                logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .public)")
+                lastError = message
+            case .trustRequired(let deviceID):
+                trustRequiredDeviceID = deviceID
             }
             runningAction = nil
         }

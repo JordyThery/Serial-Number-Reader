@@ -4,6 +4,7 @@ struct ContentView: View {
     let monitor: USBDeviceMonitor
     let jamf: JamfStore
     let actions: DeviceActionController
+    let restore: RestoreController
 
     @Environment(UpdateChecker.self) private var updates
     @State private var selectedDeviceID: USBDevice.ID?
@@ -49,6 +50,8 @@ struct ContentView: View {
                     device: device,
                     jamf: jamf,
                     actions: actions,
+                    restore: restore,
+                    monitor: monitor,
                     connectedDeviceCount: monitor.devices.count(where: \.isConnected)
                 )
                 .id(device.id) // reset per-device view state on selection change
@@ -61,6 +64,9 @@ struct ContentView: View {
                         : "Select a device from the list.")
                 )
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            RestoreBanner(restore: restore)
         }
         .navigationTitle("Serial Number Reader")
         .sheet(isPresented: Bindable(updates).isPresented) {
@@ -225,6 +231,7 @@ struct ModeBadge: View {
 }
 
 #Preview {
-    ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController())
+    ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController(),
+                restore: RestoreController())
         .environment(UpdateChecker())
 }

@@ -107,9 +107,12 @@ final class USBDeviceMonitor {
                 if let index = devices.firstIndex(where: { $0.id == device.id }) {
                     // Re-published entry: keep details already read from the device.
                     var updated = device
-                    if let info = devices[index].lockdownInfo {
-                        updated.lockdownInfo = info
-                        updated.modelInfo = devices[index].modelInfo
+                    let existing = devices[index]
+                    if existing.lockdownInfo != nil || existing.configurator != nil {
+                        updated.lockdownInfo = existing.lockdownInfo
+                        updated.configurator = existing.configurator
+                        updated.modelInfo = existing.modelInfo
+                        updated.isTrusted = existing.isTrusted
                     }
                     devices[index] = updated
                 } else {
@@ -128,6 +131,9 @@ final class USBDeviceMonitor {
                     devices.insert(device, at: 0)
                     if device.mode == .normal, let udid = device.udid {
                         readLockdownInfo(deviceID: device.id, udid: udid)
+                    }
+                    if device.mode == .dfu {
+                        identifyWithConfigurator(deviceID: device.id)
                     }
                 }
             }
@@ -166,10 +172,76 @@ final class USBDeviceMonitor {
                 }.value
                 if let info {
                     apply(info, toDeviceID: deviceID)
+                    refreshTrust(deviceID: deviceID)
                     return
                 }
             }
             logger.debug("No lockdown details for device \(deviceID)")
+        }
+    }
+
+    /// Re-checks whether this Mac holds a pairing for a booted device — after
+    /// the user taps Trust, or after Remove Trust.
+    func refreshTrust(deviceID: UInt64) {
+        guard let device = devices.first(where: { $0.id == deviceID }),
+              device.mode == .normal, device.isConnected, let udid = device.udid
+        else { return }
+        Task {
+            let trusted = await Task.detached(priority: .utility) { Usbmux.hasPairRecord(udid: udid) }.value
+            if let index = devices.firstIndex(where: { $0.id == deviceID }) {
+                devices[index].isTrusted = trusted
+            }
+        }
+    }
+
+    // MARK: - Configurator identification
+
+    /// Identifies a DFU device through Apple Configurator, which reports the
+    /// ECID, UDID and model even for "Debug USB" devices. Configurator can
+    /// take a moment to see a new device, hence the retries. Silent when
+    /// Configurator isn't installed or doesn't list the device.
+    private func identifyWithConfigurator(deviceID: UInt64) {
+        guard Configurator.isAvailable else { return }
+        Task {
+            for attempt in 0..<4 {
+                if attempt > 0 { try? await Task.sleep(for: .seconds(2)) }
+                guard let device = devices.first(where: { $0.id == deviceID && $0.isConnected }) else { return }
+                let listed = (try? await Task.detached(priority: .utility) { try Configurator.listDevices() }.value) ?? []
+                if let match = Self.configuratorMatch(in: listed, locationID: device.locationID, ecid: device.ecid) {
+                    apply(match, toDeviceID: deviceID)
+                    return
+                }
+            }
+            logger.debug("Configurator didn't identify device \(deviceID)")
+        }
+    }
+
+    /// Links a row to Configurator's device: by ECID when the USB descriptor
+    /// has one, otherwise by USB location ID — but only when exactly one
+    /// device has it, so a row is never linked to the wrong device.
+    nonisolated static func configuratorMatch(
+        in listed: [ConfiguratorDevice], locationID: UInt32?, ecid: String?
+    ) -> ConfiguratorDevice? {
+        if let ecid, let wanted = Configurator.normalizedECID(ecid) {
+            return listed.first { Configurator.normalizedECID($0.ecid) == wanted }
+        }
+        guard let locationID else { return nil }
+        let candidates = listed.filter { $0.locationID == locationID }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private func apply(_ match: ConfiguratorDevice, toDeviceID deviceID: UInt64) {
+        guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
+        devices[index].configurator = match
+        if devices[index].modelInfo == nil, let deviceType = match.deviceType {
+            devices[index].modelInfo = ModelDatabase.shared.model(identifier: deviceType)
+        }
+    }
+
+    /// Marks a device as no longer trusted after Remove Trust succeeded.
+    func markUntrusted(deviceID: UInt64) {
+        if let index = devices.firstIndex(where: { $0.id == deviceID }) {
+            devices[index].isTrusted = false
         }
     }
 
@@ -218,6 +290,7 @@ final class USBDeviceMonitor {
             name=\(productName ?? "nil", privacy: .public) \
             serialDescriptor=\(serialString ?? "nil", privacy: .public)
             """)
+        let location = (property("locationID", of: service) as NSNumber?).map { UInt32(truncatingIfNeeded: $0.int64Value) }
 
         switch productID {
         case Self.dfuProductID, Self.recoveryProductID, Self.debugUSBProductID:
@@ -227,7 +300,8 @@ final class USBDeviceMonitor {
             return USBDevice(
                 id: entryID, mode: mode, productID: productID,
                 usbProductName: productName, rawSerialDescriptor: serialString,
-                descriptor: parsed, udid: nil, modelInfo: model, connectedAt: .now
+                descriptor: parsed, udid: nil, modelInfo: model,
+                locationID: location, connectedAt: .now
             )
 
         default:
@@ -243,7 +317,8 @@ final class USBDeviceMonitor {
             return USBDevice(
                 id: entryID, mode: .normal, productID: productID,
                 usbProductName: productName, rawSerialDescriptor: serialString,
-                descriptor: nil, udid: udid, modelInfo: nil, connectedAt: .now
+                descriptor: nil, udid: udid, modelInfo: nil,
+                locationID: location, connectedAt: .now
             )
         }
     }

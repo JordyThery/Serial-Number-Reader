@@ -1,0 +1,200 @@
+import Foundation
+import Observation
+import os
+
+/// Runs one Restore or Revive at a time through Apple Configurator and
+/// publishes its progress. Shared app-wide: the progress banner, the quit
+/// confirmation and the other device actions all consult it.
+@MainActor
+@Observable
+final class RestoreController {
+
+    struct Job: Equatable {
+        enum Kind: Equatable {
+            case restore
+            case revive
+        }
+
+        enum State: Equatable {
+            case running
+            case succeeded
+            case failed(String)
+        }
+
+        let kind: Kind
+        /// The device as shown when the job started; the device itself
+        /// reboots and reconnects several times while it runs.
+        let deviceName: String
+        let ecid: String
+        /// File name of a chosen IPSW, nil for the latest version.
+        let ipswName: String?
+        var step = "Starting…"
+        /// 0…1, or nil while the step has no measurable progress.
+        var fraction: Double?
+        var log: [String] = []
+        var state: State = .running
+    }
+
+    private(set) var job: Job?
+
+    var isRunning: Bool { job?.state == .running }
+
+    private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Restore")
+
+    /// Starts a Restore or Revive for one device. Ignored while another job
+    /// is running.
+    func start(_ operation: Configurator.Operation, ecid: String, deviceName: String) {
+        guard !isRunning else { return }
+        let kind: Job.Kind
+        var ipswName: String?
+        switch operation {
+        case .restore(let ipsw):
+            kind = .restore
+            ipswName = ipsw?.lastPathComponent
+        case .revive:
+            kind = .revive
+        }
+        job = Job(kind: kind, deviceName: deviceName, ecid: ecid, ipswName: ipswName)
+        append("Started \(kind == .restore ? "restore" : "revive") of \(deviceName)"
+               + (ipswName.map { " with \($0)" } ?? ""))
+
+        // Keep the Mac awake: sleeping mid-restore would interrupt it.
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .userInitiated],
+            reason: "Restoring a device with Apple Configurator")
+
+        Task {
+            defer { ProcessInfo.processInfo.endActivity(activity) }
+            do {
+                for try await event in Configurator.run(operation, ecid: ecid) {
+                    handle(event)
+                }
+                job?.state = .succeeded
+                job?.fraction = 1
+                append("Completed")
+            } catch {
+                job?.state = .failed(error.localizedDescription)
+                append("Failed: \(error.localizedDescription)")
+                logger.error("Restore failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Clears a finished job's banner.
+    func dismiss() {
+        guard !isRunning else { return }
+        job = nil
+    }
+
+    private func handle(_ event: ConfiguratorEvent) {
+        switch event {
+        case .step(let name):
+            job?.step = name
+            job?.fraction = nil
+            append(name)
+        case .stepComplete:
+            break
+        case .progress(let step, let fraction):
+            if let step { job?.step = step }
+            job?.fraction = fraction
+        case .error(let message):
+            append("Error: \(message)")
+        case .finished:
+            break
+        }
+    }
+
+    private func append(_ line: String) {
+        let time = Date.now.formatted(date: .omitted, time: .standard)
+        job?.log.append("\(time)  \(line)")
+    }
+}
+
+// MARK: - IPSW files
+
+/// What a chosen IPSW contains, from its build manifest.
+nonisolated struct IPSWInfo: Equatable, Sendable {
+    let productVersion: String
+    let buildVersion: String
+    let supportedProductTypes: [String]
+
+    func supports(_ productType: String) -> Bool {
+        supportedProductTypes.contains(productType)
+    }
+
+    /// Parses BuildManifest.plist.
+    static func parse(manifest: [String: Any]) -> IPSWInfo? {
+        guard let version = manifest["ProductVersion"] as? String,
+              let build = manifest["ProductBuildVersion"] as? String
+        else { return nil }
+        return IPSWInfo(
+            productVersion: version,
+            buildVersion: build,
+            supportedProductTypes: manifest["SupportedProductTypes"] as? [String] ?? []
+        )
+    }
+
+    /// Reads the manifest from an IPSW (a zip archive) without extracting
+    /// it. Blocking — call off the main thread.
+    static func read(from url: URL) throws -> IPSWInfo {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-p", url.path, "BuildManifest.plist"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let manifest = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let info = parse(manifest: manifest)
+        else { throw Configurator.Failure(message: "This file isn't a readable IPSW.") }
+        return info
+    }
+}
+
+// MARK: - Signing status
+
+/// Apple only installs firmware it still signs. Looks the status up in the
+/// public ipsw.me data (sends only the model identifier and build), so a
+/// restore that would be refused is caught before the device is erased.
+/// Apple's signing server stays the final authority.
+nonisolated enum FirmwareSigning {
+
+    struct Firmware: Equatable, Sendable {
+        let version: String
+        let build: String
+        let signed: Bool
+    }
+
+    /// Whether a specific build is signed for the model; nil when unknown.
+    static func isSigned(productType: String, build: String) async -> Bool? {
+        guard let url = URL(string: "https://api.ipsw.me/v4/ipsw/\(productType)/\(build)") else { return nil }
+        struct Response: Decodable { let signed: Bool }
+        guard let response: Response = await fetch(url) else { return nil }
+        return response.signed
+    }
+
+    /// The newest signed release for the model; nil when unknown.
+    static func latestSigned(productType: String) async -> Firmware? {
+        guard let url = URL(string: "https://api.ipsw.me/v4/device/\(productType)?type=ipsw") else { return nil }
+        struct Response: Decodable {
+            struct Entry: Decodable { let version: String; let buildid: String; let signed: Bool }
+            let firmwares: [Entry]
+        }
+        guard let response: Response = await fetch(url) else { return nil }
+        return response.firmwares
+            .first { $0.signed }
+            .map { Firmware(version: $0.version, build: $0.buildid, signed: true) }
+    }
+
+    private static func fetch<T: Decodable>(_ url: URL) async -> T? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+}

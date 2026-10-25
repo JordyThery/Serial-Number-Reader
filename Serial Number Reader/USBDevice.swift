@@ -32,6 +32,13 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     /// Values read from a booted device before pairing (Normal mode only);
     /// nil until read, or when the device didn't answer.
     var lockdownInfo: LockdownDeviceInfo? = nil
+    /// USB location ID from the IORegistry; links DFU devices to Configurator.
+    var locationID: UInt32? = nil
+    /// The device as Apple Configurator reports it, when identified — the only
+    /// source of identifiers for "Debug USB" DFU devices.
+    var configurator: ConfiguratorDevice? = nil
+    /// Whether this Mac holds a pairing for the device (Normal mode only).
+    var isTrusted = false
     let connectedAt: Date
     /// False once the device has been unplugged; the entry stays in the list
     /// (cached) until the user removes it.
@@ -39,12 +46,36 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     var disconnectedAt: Date? = nil
 
     var serialNumber: String? { descriptor?.serialNumber }
-    var ecid: String? { descriptor?.ecid }
+
+    /// 16 hex digits, from the USB descriptor or from Configurator.
+    var ecid: String? {
+        descriptor?.ecid ?? configurator.flatMap { Configurator.normalizedECID($0.ecid) }
+    }
+
+    /// UDID for display and Jamf lookups: from a booted device's USB
+    /// descriptor, or from Configurator for DFU and Recovery devices.
+    var displayUDID: String? {
+        udid ?? configurator?.udid.flatMap(DescriptorParser.normalizedUDID)
+    }
+
+    /// The ECID in the form cfgutil's `-e` option takes. Booted devices with
+    /// a modern UDID carry it after the hyphen ("00008130-<ECID>").
+    var configuratorECID: String? {
+        if let configurator { return configurator.ecid }
+        if let ecid, let normalized = Configurator.normalizedECID(ecid) {
+            return Configurator.cfgutilECID(normalized)
+        }
+        if let udid, let hyphen = udid.firstIndex(of: "-"),
+           let normalized = Configurator.normalizedECID(String(udid[udid.index(after: hyphen)...])) {
+            return Configurator.cfgutilECID(normalized)
+        }
+        return nil
+    }
 
     /// Stable identity for a physical device, used to clear its own stale
     /// disconnected rows when it reconnects. Nil for opaque DFU devices, which
     /// expose no identifiers at all.
-    var identityKey: String? { serialNumber ?? udid ?? ecid }
+    var identityKey: String? { serialNumber ?? displayUDID ?? ecid }
 
     /// True for newer devices whose DFU mode enumerates as a locked-down
     /// "Debug USB" function that exposes no identifiers at all.
@@ -67,7 +98,9 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
         case .recovery:
             return serialNumber ?? "No SRNM field in descriptor — serial not reported"
         case .dfu:
-            return "Serial can't be read in DFU mode"
+            return configurator != nil
+                ? "Serial pending Jamf lookup"
+                : "Serial can't be read in DFU mode"
         case .normal:
             return "Serial pending Jamf lookup"
         }
@@ -80,6 +113,9 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
             if let serialNumber { return .serialNumber(serialNumber) }
             return nil
         case .dfu:
+            // Only once Configurator has identified it: the UDID makes a DFU
+            // device findable in Jamf, which in turn reveals its serial.
+            if let udid = displayUDID { return .udid(udid) }
             return nil
         case .normal:
             if let udid { return .udid(udid) }
@@ -88,9 +124,9 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Model-specific instructions for getting a device out of DFU mode and into
-/// Recovery mode (where the serial number becomes readable).
-nonisolated enum DFUExitInstructions {
+/// Model-specific button steps to put a device into Recovery mode (where the
+/// serial number becomes readable), from DFU or from a booted state.
+nonisolated enum RecoveryModeInstructions {
 
     private static let homeButtoniPhones: Set<String> = [
         "iPhone10,1", "iPhone10,4",   // iPhone 8

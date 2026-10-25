@@ -59,6 +59,10 @@ nonisolated enum Usbmux {
         case deviceNotFound
         case protocolError(String)
         case lockdownError(String)
+        case tlsError(String)
+        /// The device only accepts the request from a Mac it trusts, and this
+        /// Mac holds no (valid) pairing for it.
+        case trustRequired
 
         var errorDescription: String? {
             switch self {
@@ -66,6 +70,8 @@ nonisolated enum Usbmux {
             case .deviceNotFound: "The device is not visible to usbmuxd — is it still connected and unlocked at least once since boot?"
             case .protocolError(let detail): "Unexpected usbmuxd reply: \(detail)"
             case .lockdownError(let detail): "The device refused: \(detail)"
+            case .tlsError(let detail): "The trusted connection failed: \(detail)"
+            case .trustRequired: "This device only accepts Enter Recovery from a Mac it trusts."
             }
         }
     }
@@ -73,35 +79,110 @@ nonisolated enum Usbmux {
     private static let socketPath = "/var/run/usbmuxd"
     private static let lockdownPort: UInt16 = 62078
 
+    /// Lockdown errors meaning "this request needs a paired session". iOS 27
+    /// answers an unpaired EnterRecovery with SessionInactive.
+    private static let trustRequiredErrors: Set<String> = ["SessionInactive", "InvalidHostID"]
+
     /// Sends lockdownd's `EnterRecovery` to the device with the given UDID.
     /// Blocking — call off the main thread. On success the device disconnects
     /// and reappears in Recovery mode on its own.
+    ///
+    /// Tries without pairing first (accepted up to iOS 26). If the device
+    /// requires trust, retries over a paired TLS session using the pairing
+    /// macOS stored when the device was trusted; throws `.trustRequired` when
+    /// there is none.
     static func enterRecovery(udid: String) throws {
-        try withLockdown(udid: udid) { fd in
-            try lockdownSend(fd, [
+        do {
+            try withLockdown(udid: udid) { connection in
+                try sendEnterRecovery(over: SocketChannel(fd: connection.fd))
+            }
+        } catch Failure.lockdownError(let code) where trustRequiredErrors.contains(code) {
+            try enterRecoveryPaired(udid: udid)
+        }
+    }
+
+    /// Whether this Mac holds a pairing for the device (it was trusted here).
+    static func hasPairRecord(udid: String) -> Bool {
+        guard let serial = try? usbmuxSerial(udid: udid) else { return false }
+        return (try? pairRecord(usbmuxSerial: serial)) != nil
+    }
+
+    private static func enterRecoveryPaired(udid: String) throws {
+        try withLockdown(udid: udid) { connection in
+            guard let record = try pairRecord(usbmuxSerial: connection.usbmuxSerial),
+                  let hostID = record["HostID"] as? String,
+                  let systemBUID = record["SystemBUID"] as? String,
+                  let certificate = record["HostCertificate"] as? Data,
+                  let privateKey = record["HostPrivateKey"] as? Data
+            else { throw Failure.trustRequired }
+
+            let plain = SocketChannel(fd: connection.fd)
+            try lockdownSend(plain, [
                 "Label": "SerialNumberReader",
-                "Request": "EnterRecovery",
+                "Request": "StartSession",
+                "HostID": hostID,
+                "SystemBUID": systemBUID,
             ])
-            let reply = try lockdownReceive(fd)
-            if let error = reply["Error"] as? String {
+            let session = try lockdownReceive(plain)
+            if let error = session["Error"] as? String {
+                // The device was reset or the trust was removed on the device.
+                if trustRequiredErrors.contains(error) { throw Failure.trustRequired }
                 throw Failure.lockdownError(error)
             }
-            guard (reply["Request"] as? String) == "EnterRecovery" else {
-                throw Failure.protocolError("unexpected lockdown reply: \(reply)")
+
+            if (session["EnableSessionSSL"] as? Bool) == true {
+                let tls: LockdownTLS
+                do {
+                    tls = try LockdownTLS(socket: connection.fd, certificatePEM: certificate, privateKeyPEM: privateKey)
+                } catch {
+                    throw Failure.tlsError(error.localizedDescription)
+                }
+                defer { tls.close() }
+                try sendEnterRecovery(over: TLSChannel(tls: tls))
+            } else {
+                try sendEnterRecovery(over: plain)
             }
         }
+    }
+
+    private static func sendEnterRecovery(over channel: LockdownChannel) throws {
+        try lockdownSend(channel, [
+            "Label": "SerialNumberReader",
+            "Request": "EnterRecovery",
+        ])
+        let reply = try lockdownReceive(channel)
+        if let error = reply["Error"] as? String {
+            throw Failure.lockdownError(error)
+        }
+        guard (reply["Request"] as? String) == "EnterRecovery" else {
+            throw Failure.protocolError("unexpected lockdown reply: \(reply)")
+        }
+    }
+
+    /// The pairing macOS stored for the device, or nil when it isn't paired.
+    private static func pairRecord(usbmuxSerial: String) throws -> [String: Any]? {
+        let fd = try openSocket()
+        defer { close(fd) }
+        let reply = try muxRequest(fd, tag: 3, payload: [
+            "MessageType": "ReadPairRecord",
+            "PairRecordID": usbmuxSerial,
+            "ProgName": "Serial Number Reader",
+        ])
+        guard let data = reply["PairRecordData"] as? Data else { return nil }
+        return try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
     }
 
     /// Reads the values the device reports without pairing (model, OS
     /// version, name). Blocking — call off the main thread.
     static func deviceInfo(udid: String) throws -> LockdownDeviceInfo {
-        try withLockdown(udid: udid) { fd in
+        try withLockdown(udid: udid) { connection in
+            let channel = SocketChannel(fd: connection.fd)
             // GetValue without a key returns every value allowed unpaired.
-            try lockdownSend(fd, [
+            try lockdownSend(channel, [
                 "Label": "SerialNumberReader",
                 "Request": "GetValue",
             ])
-            let reply = try lockdownReceive(fd)
+            let reply = try lockdownReceive(channel)
             if let error = reply["Error"] as? String {
                 throw Failure.lockdownError(error)
             }
@@ -112,34 +193,21 @@ nonisolated enum Usbmux {
         }
     }
 
+    /// An open tunnel to a device's lockdownd.
+    private struct LockdownConnection {
+        let fd: Int32
+        /// The UDID exactly as usbmuxd formats it — the key for pair records.
+        let usbmuxSerial: String
+    }
+
     /// Opens a usbmux tunnel to the lockdownd of the USB device with this
     /// UDID and runs `body` on it.
-    private static func withLockdown<T>(udid: String, _ body: (Int32) throws -> T) throws -> T {
+    private static func withLockdown<T>(udid: String, _ body: (LockdownConnection) throws -> T) throws -> T {
         let fd = try openSocket()
         defer { close(fd) }
 
         // 1. Find the usbmux device ID for this UDID.
-        let listReply = try muxRequest(fd, tag: 1, payload: [
-            "MessageType": "ListDevices",
-            "ProgName": "Serial Number Reader",
-            "ClientVersionString": "1.0",
-            "kLibUSBMuxVersion": 3,
-        ])
-        guard let deviceList = listReply["DeviceList"] as? [[String: Any]] else {
-            throw Failure.protocolError("no DeviceList in reply")
-        }
-        let wanted = normalized(udid)
-        var deviceID: Int?
-        for entry in deviceList {
-            guard let props = entry["Properties"] as? [String: Any],
-                  (props["ConnectionType"] as? String) == "USB",
-                  let serial = props["SerialNumber"] as? String,
-                  normalized(serial) == wanted
-            else { continue }
-            deviceID = (props["DeviceID"] as? Int) ?? (entry["DeviceID"] as? Int)
-            break
-        }
-        guard let deviceID else { throw Failure.deviceNotFound }
+        let (deviceID, serial) = try findDevice(fd, udid: udid)
 
         // 2. Tunnel to lockdownd. The port travels in network byte order.
         let connectReply = try muxRequest(fd, tag: 2, payload: [
@@ -153,7 +221,36 @@ nonisolated enum Usbmux {
         }
 
         // 3. From here the socket is a raw pipe to lockdownd.
-        return try body(fd)
+        return try body(LockdownConnection(fd: fd, usbmuxSerial: serial))
+    }
+
+    private static func usbmuxSerial(udid: String) throws -> String {
+        let fd = try openSocket()
+        defer { close(fd) }
+        return try findDevice(fd, udid: udid).serial
+    }
+
+    private static func findDevice(_ fd: Int32, udid: String) throws -> (deviceID: Int, serial: String) {
+        let listReply = try muxRequest(fd, tag: 1, payload: [
+            "MessageType": "ListDevices",
+            "ProgName": "Serial Number Reader",
+            "ClientVersionString": "1.0",
+            "kLibUSBMuxVersion": 3,
+        ])
+        guard let deviceList = listReply["DeviceList"] as? [[String: Any]] else {
+            throw Failure.protocolError("no DeviceList in reply")
+        }
+        let wanted = normalized(udid)
+        for entry in deviceList {
+            guard let props = entry["Properties"] as? [String: Any],
+                  (props["ConnectionType"] as? String) == "USB",
+                  let serial = props["SerialNumber"] as? String,
+                  normalized(serial) == wanted,
+                  let deviceID = (props["DeviceID"] as? Int) ?? (entry["DeviceID"] as? Int)
+            else { continue }
+            return (deviceID, serial)
+        }
+        throw Failure.deviceNotFound
     }
 
     // MARK: - Socket plumbing
@@ -237,19 +334,42 @@ nonisolated enum Usbmux {
 
     // MARK: - lockdown framing (4-byte big-endian length + XML plist)
 
-    private static func lockdownSend(_ fd: Int32, _ payload: [String: Any]) throws {
+    /// Where lockdown messages travel: the plain socket, or TLS on the same
+    /// socket once a paired session has been started.
+    private protocol LockdownChannel {
+        func write(_ data: Data) throws
+        func read(_ count: Int) throws -> Data
+    }
+
+    private struct SocketChannel: LockdownChannel {
+        let fd: Int32
+        func write(_ data: Data) throws { try writeAll(fd, data) }
+        func read(_ count: Int) throws -> Data { try readExactly(fd, count) }
+    }
+
+    private struct TLSChannel: LockdownChannel {
+        let tls: LockdownTLS
+        func write(_ data: Data) throws {
+            do { try tls.write(data) } catch { throw Failure.tlsError(error.localizedDescription) }
+        }
+        func read(_ count: Int) throws -> Data {
+            do { return try tls.readLength(UInt(count)) } catch { throw Failure.tlsError(error.localizedDescription) }
+        }
+    }
+
+    private static func lockdownSend(_ channel: LockdownChannel, _ payload: [String: Any]) throws {
         let plist = try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
         var packet = Data()
         withUnsafeBytes(of: UInt32(plist.count).bigEndian) { packet.append(contentsOf: $0) }
         packet.append(plist)
-        try writeAll(fd, packet)
+        try channel.write(packet)
     }
 
-    private static func lockdownReceive(_ fd: Int32) throws -> [String: Any] {
-        let lengthData = try readExactly(fd, 4)
+    private static func lockdownReceive(_ channel: LockdownChannel) throws -> [String: Any] {
+        let lengthData = try channel.read(4)
         let length = lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.bigEndian
         guard length > 0, length < 1 << 24 else { throw Failure.protocolError("bad lockdown length") }
-        let body = try readExactly(fd, Int(length))
+        let body = try channel.read(Int(length))
         guard let reply = try PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
             throw Failure.protocolError("non-plist lockdown reply")
         }
