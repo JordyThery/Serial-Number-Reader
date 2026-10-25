@@ -90,6 +90,25 @@ struct ConfiguratorDeviceTests {
         #expect(USBDeviceMonitor.configuratorMatch(in: duplicated, locationID: 0x2100000, ecid: nil) == nil)
     }
 
+    @Test("A DFU device's UDID is derived from chip ID and ECID (Configurator reports none)")
+    func derivedUDID() {
+        var device = USBDevice(id: 1, mode: .dfu, productID: 0x1881, usbProductName: "Debug USB",
+                               rawSerialDescriptor: nil, descriptor: nil, udid: nil, modelInfo: nil, connectedAt: .now)
+        device.configurator = ConfiguratorDevice(ecid: "0x1A2B3C4D5E6F70", udid: nil, deviceType: "iPad16,1", locationID: 0x2100000)
+        device.modelInfo = ModelDatabase.shared.model(identifier: "iPad16,1")
+        #expect(device.displayUDID == "00008130-001A2B3C4D5E6F70")
+        #expect(device.jamfQuery == .udid("00008130-001A2B3C4D5E6F70"))
+    }
+
+    @Test("Only chips with chip-ID/ECID UDIDs are derived")
+    func derivableChips() {
+        #expect(USBDevice.usesChipECIDUDID(0x8020))   // A12
+        #expect(USBDevice.usesChipECIDUDID(0x8103))   // M1
+        #expect(USBDevice.usesChipECIDUDID(0x6000))   // M1 Pro
+        #expect(!USBDevice.usesChipECIDUDID(0x8015))  // A11: hashed UDID
+        #expect(!USBDevice.usesChipECIDUDID(0x8011))  // A10X
+    }
+
     @Test("A booted device's ECID comes from its UDID")
     func ecidFromUDID() {
         let device = USBDevice(id: 1, mode: .normal, productID: 0x12AB, usbProductName: "iPad",

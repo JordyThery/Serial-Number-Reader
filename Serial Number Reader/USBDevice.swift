@@ -53,9 +53,29 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     }
 
     /// UDID for display and Jamf lookups: from a booted device's USB
-    /// descriptor, or from Configurator for DFU and Recovery devices.
+    /// descriptor or from Configurator, and otherwise derived from the chip
+    /// ID and ECID (Configurator reports no UDID in DFU).
     var displayUDID: String? {
-        udid ?? configurator?.udid.flatMap(DescriptorParser.normalizedUDID)
+        udid
+            ?? configurator?.udid.flatMap(DescriptorParser.normalizedUDID)
+            ?? derivedUDID
+    }
+
+    /// From the A12 onward (and on Apple silicon Macs) the UDID is
+    /// "<chip ID, 8 hex>-<ECID, 16 hex>". Older devices use a hash that can't
+    /// be derived, so nothing is returned for them.
+    private var derivedUDID: String? {
+        guard let ecid, let normalizedECID = Configurator.normalizedECID(ecid) else { return nil }
+        let chip = descriptor?.cpid.flatMap { UInt32($0, radix: 16) }
+            ?? modelInfo.flatMap { ModelDatabase.shared.chipID(forIdentifier: $0.identifier) }
+        guard let chip, Self.usesChipECIDUDID(chip) else { return nil }
+        return String(format: "%08X-%@", chip, normalizedECID)
+    }
+
+    /// A12 (0x8020) and later, plus the Mac-only chips in 0x6000–0x6FFF
+    /// (M1 Pro and later variants).
+    static func usesChipECIDUDID(_ chip: UInt32) -> Bool {
+        chip >= 0x8020 || (0x6000...0x6FFF).contains(chip)
     }
 
     /// The ECID in the form cfgutil's `-e` option takes. Booted devices with

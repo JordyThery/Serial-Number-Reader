@@ -60,4 +60,10 @@ nonisolated final class ModelDatabase: Sendable {
     func model(identifier: String) -> ModelInfo {
         ModelInfo(identifier: identifier, marketingName: models[identifier])
     }
+
+    /// The chip ID (CPID) of a model identifier, from the board mapping.
+    func chipID(forIdentifier identifier: String) -> UInt32? {
+        boards.first { $0.value == identifier }
+            .flatMap { UInt32($0.key.prefix { $0 != ":" }, radix: 16) }
+    }
 }
