@@ -82,7 +82,7 @@ The app runs outside the App Sandbox: it needs direct IOKit access for USB enume
 
 ## Credits
 
-USB-PD VDM power actions are derived from [AsahiLinux/macvdmtool](https://github.com/AsahiLinux/macvdmtool) and [osy/ThunderboltPatcher](https://github.com/osy/ThunderboltPatcher) (Apache-2.0); attribution is retained in the relevant source files.
+USB-PD VDM power actions are derived from [AsahiLinux/macvdmtool](https://github.com/AsahiLinux/macvdmtool) and [osy/ThunderboltPatcher](https://github.com/osy/ThunderboltPatcher) (Apache-2.0); attribution is retained in the relevant source files. The full licence is in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and in the app's About window.
 
 ## Support
 

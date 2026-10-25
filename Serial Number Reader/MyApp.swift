@@ -53,9 +53,7 @@ struct SerialNumberReaderApp: App {
                 .task { await updates.checkAutomatically() }
         }
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { updates.checkManually() }
-            }
+            AppInfoCommands(appName: "Serial Number Reader") { updates.checkManually() }
             CommandGroup(replacing: .importExport) {
                 Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
                     .keyboardShortcut("e")
@@ -66,9 +64,13 @@ struct SerialNumberReaderApp: App {
             }
         }
 
-        Settings {
-            SettingsView(jamf: jamf)
+        SettingsWindow(updates: updates) {
+            SettingsTab("Connections", systemImage: "network") {
+                SettingsView(jamf: jamf)
+            }
         }
+
+        AboutWindow(configuration: .serialNumberReader)
     }
 
     /// The device list in connection order (oldest first), as export rows.

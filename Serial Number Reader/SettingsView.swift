@@ -1,10 +1,11 @@
 import JTKit
 import SwiftUI
 
+/// The Settings window's Connections tab: how the app signs in to Jamf. Its
+/// sections go in JTKit's `SettingsTab`, which supplies the form and width.
 struct SettingsView: View {
     @Bindable var jamf: JamfStore
 
-    @AppStorage(UpdateChecker.automaticCheckKey) private var checksForUpdates = true
     @State private var testResult: TestResult?
     @State private var testing = false
 
@@ -14,7 +15,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
+        Group {
             Section("Authentication") {
                 Picker("Method", selection: $jamf.authMethod) {
                     ForEach(JamfStore.AuthMethod.allCases) { method in
@@ -57,19 +58,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section {
-                Toggle("Check for updates automatically", isOn: $checksForUpdates)
-            } header: {
-                Text("Updates")
-            } footer: {
-                Text("Checks GitHub for a new release at most once a day. Use Serial Number Reader → Check for Updates… to check now.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
-        .formStyle(.grouped)
-        .frame(width: 520)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Jamf Pro (direct)
@@ -191,5 +180,10 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView(jamf: JamfStore())
+    SettingsTabs {
+        SettingsTab("Connections", systemImage: "network") {
+            SettingsView(jamf: JamfStore())
+        }
+    }
+    .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }
