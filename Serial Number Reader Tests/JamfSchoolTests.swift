@@ -46,6 +46,28 @@ struct JamfSchoolTests {
         }
     }
 
+    @Test("Only DeviceNotFound means no match; other 404s point at the URL")
+    func notFound() {
+        #expect(throws: JamfError.httpError(404, "not found — check the Jamf School URL (e.g. https://yourschool.jamfcloud.com)")) {
+            try JamfSchoolClient.throwIfError(status: 404, data: Data("<html>Not Found</html>".utf8))
+        }
+    }
+
+    @Test("A URL with the documented /api suffix is accepted")
+    func apiSuffix() throws {
+        let config = try #require(JamfConfiguration.make(
+            urlString: "https://yourschool.jamfcloud.com/api/",
+            credentials: .jamfSchool(networkID: "012345", apiKey: "KEY")))
+        #expect(config.apiBaseURL.absoluteString == "https://yourschool.jamfcloud.com")
+    }
+
+    @Test("Asset tags are form-encoded so + and & survive")
+    func formEncoding() {
+        #expect(JamfSchoolClient.formEncoded("LAB+01") == "LAB%2B01")
+        #expect(JamfSchoolClient.formEncoded("A+B&C=D é") == "A%2BB%26C%3DD%20%C3%A9")
+        #expect(JamfSchoolClient.formEncoded("Plain-tag_1.0~") == "Plain-tag_1.0~")
+    }
+
     @Test("Check-in dates parse as a string or as an object with a time zone")
     func checkIn() throws {
         struct Wrapper: Decodable { let lastCheckin: CheckIn }

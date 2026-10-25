@@ -43,8 +43,12 @@ actor JamfSchoolClient {
                 struct Item: Decodable { let UDID: String?; let serialNumber: String? }
                 let devices: [Item]?
             }
-            let matches = (try? JSONDecoder().decode(List.self, from: data))?.devices?
-                .filter { $0.serialNumber?.caseInsensitiveCompare(safe) == .orderedSame } ?? []
+            // A response without a device list isn't Jamf School's (for example
+            // a web page from a wrong address) — never read it as "no match".
+            guard let list = try? JSONDecoder().decode(List.self, from: data), let devices = list.devices else {
+                throw JamfError.decodingFailure("not a Jamf School device list — check the Jamf School URL")
+            }
+            let matches = devices.filter { $0.serialNumber?.caseInsensitiveCompare(safe) == .orderedSame }
             guard !matches.isEmpty else { throw JamfError.noMatch }
             guard matches.count == 1, let udid = matches[0].UDID else {
                 throw JamfError.multipleMatches(matches.count)
@@ -56,15 +60,27 @@ actor JamfSchoolClient {
     /// Sets or clears the asset tag. Requires an API key allowed to edit devices.
     func updateAssetTag(_ assetTag: String, udid: String) async throws {
         let safe = try JamfClient.validatedIdentifier(udid)
-        var form = URLComponents()
-        form.queryItems = [URLQueryItem(name: "assetTag", value: assetTag)]
         _ = try await send(path: "api/devices/\(safe)/details", method: "POST",
-                           body: Data((form.percentEncodedQuery ?? "").utf8))
+                           body: Data("assetTag=\(Self.formEncoded(assetTag))".utf8))
     }
 
-    /// Validates URL and credentials with a lookup that can't match anything.
+    /// Validates URL and credentials with a lookup that can't match anything;
+    /// the answer must be a Jamf School device list.
     func testConnection() async throws {
-        _ = try await send(path: "api/devices", queryItems: [URLQueryItem(name: "serialnumber", value: "CONNECTIONCHECK")])
+        let data = try await send(path: "api/devices", queryItems: [URLQueryItem(name: "serialnumber", value: "CONNECTIONCHECK")])
+        struct List: Decodable { let devices: [Ignored]? }
+        struct Ignored: Decodable {}
+        guard (try? JSONDecoder().decode(List.self, from: data))?.devices != nil else {
+            throw JamfError.decodingFailure("not a Jamf School device list — check the Jamf School URL")
+        }
+    }
+
+    /// Form value encoding. URLComponents leaves "+" as is, which a form
+    /// decoder reads as a space, so only unreserved characters stay literal.
+    static func formEncoded(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     // MARK: Device record
@@ -164,8 +180,11 @@ actor JamfSchoolClient {
         case 401, 403:
             throw JamfError.authenticationFailed(
                 "HTTP \(effective) — check the Network ID and API key, and that the key may read devices (and edit them for asset tags)")
-        case 404:
+        case 404 where message == "DeviceNotFound":
             throw JamfError.noMatch
+        case 404:
+            // Any other 404 means the address is wrong, not the device.
+            throw JamfError.httpError(404, "not found — check the Jamf School URL (e.g. https://yourschool.jamfcloud.com)")
         default:
             throw JamfError.httpError(effective, message ?? "unexpected Jamf School response")
         }

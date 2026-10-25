@@ -94,11 +94,18 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
                 tokenURL: region.gatewayURL.appending(path: "auth/token"),
                 webBaseURL: serverURL, credentials: credentials)
         case .jamfSchool(let networkID, let apiKey):
-            guard !networkID.isEmpty, !apiKey.isEmpty, let serverURL else { return nil }
-            // Paths such as "api/devices" are appended by JamfSchoolClient.
+            guard !networkID.isEmpty, !apiKey.isEmpty, var schoolURL = serverURL else { return nil }
+            // Jamf School's documentation shows the API address with /api;
+            // accept it, since JamfSchoolClient appends "api/…" itself.
+            if schoolURL.path().lowercased().hasSuffix("/api") {
+                schoolURL = schoolURL.deletingLastPathComponent()
+                if schoolURL.absoluteString.hasSuffix("/") {
+                    schoolURL = URL(string: String(schoolURL.absoluteString.dropLast())) ?? schoolURL
+                }
+            }
             return JamfConfiguration(
-                apiBaseURL: serverURL, tokenURL: nil,
-                webBaseURL: serverURL, credentials: credentials)
+                apiBaseURL: schoolURL, tokenURL: nil,
+                webBaseURL: schoolURL, credentials: credentials)
         }
     }
 
