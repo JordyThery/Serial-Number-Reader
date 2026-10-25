@@ -70,8 +70,11 @@ struct RestoreSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                Button("Erase & Restore", role: .destructive, action: startRestore)
-                    .disabled(!canRestore)
+                Button(role: .destructive, action: startRestore) {
+                    Text("Erase & Restore")
+                        .foregroundStyle(canRestore ? .red : .secondary)
+                }
+                .disabled(!canRestore)
             }
         }
         .padding(20)

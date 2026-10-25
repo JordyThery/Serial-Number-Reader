@@ -28,6 +28,7 @@ final class RestoreController {
         let ecid: String
         /// File name of a chosen IPSW, nil for the latest version.
         let ipswName: String?
+        let startedAt = Date.now
         var step = "Starting…"
         /// 0…1, or nil while the step has no measurable progress.
         var fraction: Double?
@@ -38,6 +39,21 @@ final class RestoreController {
     private(set) var job: Job?
 
     var isRunning: Bool { job?.state == .running }
+
+    /// Whether a list row belongs to the current (or just finished) job. A
+    /// restore passes the device through Recovery and a restore OS, which
+    /// appear as separate rows without a serial number.
+    func isPart(of device: USBDevice) -> Bool {
+        guard let job,
+              let wanted = Configurator.normalizedECID(job.ecid),
+              let ecid = device.configuratorECID,
+              let have = Configurator.normalizedECID(ecid)
+        else { return false }
+        guard wanted == have, device.connectedAt >= job.startedAt else { return false }
+        // Recovery/DFU stages stay labelled until the banner is dismissed; a
+        // booted row only while running — afterwards it's the restored device.
+        return device.mode != .normal || job.state == .running
+    }
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Restore")
 

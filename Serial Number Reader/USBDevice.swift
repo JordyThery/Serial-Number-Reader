@@ -98,9 +98,7 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
         case .recovery:
             return serialNumber ?? "No SRNM field in descriptor — serial not reported"
         case .dfu:
-            return configurator != nil
-                ? "Serial pending Jamf lookup"
-                : "Serial can't be read in DFU mode"
+            return "Serial can't be read in DFU mode"
         case .normal:
             return "Serial pending Jamf lookup"
         }

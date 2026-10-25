@@ -24,7 +24,8 @@ struct ContentView: View {
                     )
                 } else {
                     List(monitor.devices, selection: $selectedDeviceID) { device in
-                        DeviceRow(device: device, jamfState: jamf.state(for: device))
+                        DeviceRow(device: device, jamfState: jamf.state(for: device),
+                                  isPartOfRestore: restore.isPart(of: device))
                             .contextMenu {
                                 Button("Remove from List", role: .destructive) {
                                     monitor.removeFromList(device.id)
@@ -45,28 +46,31 @@ struct ContentView: View {
                 .disabled(!monitor.hasDisconnectedDevices)
             }
         } detail: {
-            if let device = selectedDevice {
-                DeviceDetailView(
-                    device: device,
-                    jamf: jamf,
-                    actions: actions,
-                    restore: restore,
-                    monitor: monitor,
-                    connectedDeviceCount: monitor.devices.count(where: \.isConnected)
-                )
-                .id(device.id) // reset per-device view state on selection change
-            } else {
-                ContentUnavailableView(
-                    "No Device Selected",
-                    systemImage: "sidebar.left",
-                    description: Text(monitor.devices.isEmpty
-                        ? "Connect an iPhone or iPad via USB."
-                        : "Select a device from the list.")
-                )
+            Group {
+                if let device = selectedDevice {
+                    DeviceDetailView(
+                        device: device,
+                        jamf: jamf,
+                        actions: actions,
+                        restore: restore,
+                        monitor: monitor,
+                        connectedDeviceCount: monitor.devices.count(where: \.isConnected)
+                    )
+                    .id(device.id) // reset per-device view state on selection change
+                } else {
+                    ContentUnavailableView(
+                        "No Device Selected",
+                        systemImage: "sidebar.left",
+                        description: Text(monitor.devices.isEmpty
+                            ? "Connect an iPhone or iPad via USB."
+                            : "Select a device from the list.")
+                    )
+                }
             }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            RestoreBanner(restore: restore)
+            // In the detail column only, so it never covers the device list.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                RestoreBanner(restore: restore)
+            }
         }
         .navigationTitle("Serial Number Reader")
         .sheet(isPresented: Bindable(updates).isPresented) {
@@ -98,6 +102,9 @@ struct ContentView: View {
 struct DeviceRow: View {
     let device: USBDevice
     let jamfState: JamfLookupState
+    /// The device is passing through this mode as part of a Restore
+    /// or Revive, so missing identifiers are expected rather than a problem.
+    var isPartOfRestore = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -108,17 +115,20 @@ struct DeviceRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
+                    // The model name wins space over the OS version; badges
+                    // never truncate.
                     Text(device.modelDisplayName)
                         .font(.headline)
                         .lineLimit(1)
+                        .layoutPriority(1)
                     if let os = device.lockdownInfo?.productVersion {
                         Text(osShortName + " " + os)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .fixedSize()
                     }
                     ModeBadge(mode: device.mode)
+                        .fixedSize()
                     if !device.isConnected {
                         Text("Disconnected")
                             .font(.caption2.weight(.semibold))
@@ -126,6 +136,7 @@ struct DeviceRow: View {
                             .padding(.vertical, 1)
                             .background(.gray.opacity(0.18), in: Capsule())
                             .foregroundStyle(.secondary)
+                            .fixedSize()
                     }
                 }
                 Text(serialLine)
@@ -150,7 +161,11 @@ struct DeviceRow: View {
 
     private var serialLine: String {
         if let serial = device.serialNumber ?? jamfSerial { return serial }
-        guard device.mode == .normal else { return device.serialStatusText }
+        if isPartOfRestore { return "Part of the restore — no serial in this stage" }
+        // Booted devices, and DFU devices identified through Configurator,
+        // can only get their serial from Jamf.
+        let serialComesFromJamf = device.mode == .normal || (device.mode == .dfu && device.jamfQuery != nil)
+        guard serialComesFromJamf else { return device.serialStatusText }
         // A booted device's serial can only come from Jamf — be precise
         // about why it isn't available.
         switch jamfState {
