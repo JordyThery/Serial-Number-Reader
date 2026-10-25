@@ -61,7 +61,7 @@ struct RestoreSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Label("All content and settings on the device are erased.", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                Text("Activation Lock stays in place. Devices enrolled through Automated Device Enrollment re-enroll in Jamf Pro during setup. The first restore of a version downloads several GB. Keep the device connected and Serial Number Reader open until it finishes.")
+                Text("Activation Lock stays in place. Devices enrolled through Automated Device Enrollment re-enroll in Jamf during setup. The first restore of a version downloads several GB. Keep the device connected and Serial Number Reader open until it finishes.")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)

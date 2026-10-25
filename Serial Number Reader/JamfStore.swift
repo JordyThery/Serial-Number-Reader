@@ -15,6 +15,42 @@ nonisolated enum JamfLookupState: Equatable, Sendable {
     case failed(String)
 }
 
+/// The configured backend — Jamf Pro (directly or through the Platform API)
+/// or Jamf School — behind the operations the store needs.
+nonisolated enum JamfService: Sendable {
+    case pro(JamfClient)
+    case school(JamfSchoolClient)
+
+    init(configuration: JamfConfiguration) {
+        if case .jamfSchool(let networkID, let apiKey) = configuration.credentials {
+            self = .school(JamfSchoolClient(baseURL: configuration.apiBaseURL, networkID: networkID, apiKey: apiKey))
+        } else {
+            self = .pro(JamfClient(config: configuration))
+        }
+    }
+
+    func lookup(_ query: JamfQuery) async throws -> JamfDeviceRecord {
+        switch self {
+        case .pro(let client): try await client.lookup(query)
+        case .school(let client): try await client.lookup(query)
+        }
+    }
+
+    func updateAssetTag(_ assetTag: String, record: JamfDeviceRecord) async throws {
+        switch self {
+        case .pro(let client): try await client.updateAssetTag(assetTag, kind: record.kind, jamfID: record.jamfID)
+        case .school(let client): try await client.updateAssetTag(assetTag, udid: record.jamfID)
+        }
+    }
+
+    func testConnection() async throws {
+        switch self {
+        case .pro(let client): try await client.testConnection()
+        case .school(let client): try await client.testConnection()
+        }
+    }
+}
+
 /// Owns the Jamf settings (URL + client ID in UserDefaults, secret in the
 /// Keychain), the API client, and per-device lookup results.
 @MainActor
@@ -26,13 +62,15 @@ final class JamfStore {
         case clientCredentials
         case basic
         case platform
+        case jamfSchool
 
         var id: Self { self }
         var label: String {
             switch self {
-            case .clientCredentials: "API Client (OAuth)"
-            case .basic: "Username & Password (Classic)"
-            case .platform: "Jamf Platform API"
+            case .clientCredentials: "Jamf Pro — API Client (OAuth)"
+            case .basic: "Jamf Pro — Username & Password (Classic)"
+            case .platform: "Jamf Pro — Jamf Platform API"
+            case .jamfSchool: "Jamf School"
             }
         }
     }
@@ -45,14 +83,17 @@ final class JamfStore {
         static let platformRegion = "jamfPlatformRegion"
         static let platformClientID = "jamfPlatformClientID"
         static let platformEnvironmentID = "jamfPlatformEnvironmentID"
+        static let schoolURL = "jamfSchoolURL"
+        static let schoolNetworkID = "jamfSchoolNetworkID"
     }
 
     var serverURLString: String {
         didSet {
             UserDefaults.standard.set(serverURLString, forKey: DefaultsKey.serverURL)
-            // With the Platform API this address only feeds "Open in Jamf Pro"
-            // links, which are computed live — lookups don't depend on it.
-            if authMethod != .platform { invalidateClient() }
+            // Only the direct Jamf Pro methods look devices up through this
+            // address. With the Platform API it only feeds "Open in Jamf Pro"
+            // links (computed live), and Jamf School has its own address.
+            if authMethod == .clientCredentials || authMethod == .basic { invalidateClient() }
         }
     }
 
@@ -123,13 +164,37 @@ final class JamfStore {
         }
     }
 
+    /// Kept separate from the Jamf Pro server URL, so switching between the
+    /// two products doesn't lose either address.
+    var schoolURLString: String {
+        didSet {
+            UserDefaults.standard.set(schoolURLString, forKey: DefaultsKey.schoolURL)
+            invalidateClient()
+        }
+    }
+
+    var schoolNetworkID: String {
+        didSet {
+            UserDefaults.standard.set(schoolNetworkID, forKey: DefaultsKey.schoolNetworkID)
+            invalidateClient()
+        }
+    }
+
+    /// Backed by the Keychain — never stored in UserDefaults.
+    var schoolAPIKey: String {
+        didSet {
+            KeychainStore.save(schoolAPIKey, account: .jamfSchoolAPIKey)
+            invalidateClient()
+        }
+    }
+
     private(set) var lookupStates: [JamfQuery: JamfLookupState] = [:]
     /// Bumped (debounced) whenever the configuration changes; the UI observes
     /// it to re-run lookups, and in-flight results from an older generation
     /// are discarded instead of being cached against the new server.
     private(set) var configurationGeneration = 0
 
-    @ObservationIgnored private var client: JamfClient?
+    @ObservationIgnored private var client: JamfService?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
     @ObservationIgnored private var invalidationTask: Task<Void, Never>?
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
@@ -147,6 +212,9 @@ final class JamfStore {
         platformClientID = UserDefaults.standard.string(forKey: DefaultsKey.platformClientID) ?? ""
         platformClientSecret = KeychainStore.load(account: .platformClientSecret) ?? ""
         platformEnvironmentID = UserDefaults.standard.string(forKey: DefaultsKey.platformEnvironmentID) ?? ""
+        schoolURLString = UserDefaults.standard.string(forKey: DefaultsKey.schoolURL) ?? ""
+        schoolNetworkID = UserDefaults.standard.string(forKey: DefaultsKey.schoolNetworkID) ?? ""
+        schoolAPIKey = KeychainStore.load(account: .jamfSchoolAPIKey) ?? ""
     }
 
     var configuration: JamfConfiguration? {
@@ -161,9 +229,17 @@ final class JamfStore {
                 clientID: platformClientID.trimmingCharacters(in: .whitespacesAndNewlines),
                 clientSecret: platformClientSecret,
                 environmentID: platformEnvironmentID.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .jamfSchool:
+            .jamfSchool(
+                networkID: schoolNetworkID.trimmingCharacters(in: .whitespacesAndNewlines),
+                apiKey: schoolAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return JamfConfiguration.make(urlString: serverURLString, credentials: credentials)
+        let url = authMethod == .jamfSchool ? schoolURLString : serverURLString
+        return JamfConfiguration.make(urlString: url, credentials: credentials)
     }
+
+    /// "Jamf Pro" or "Jamf School", for section titles and messages.
+    var productName: String { authMethod == .jamfSchool ? "Jamf School" : "Jamf Pro" }
 
     var isConfigured: Bool { configuration != nil }
 
@@ -192,10 +268,10 @@ final class JamfStore {
         }
     }
 
-    private func activeClient() -> JamfClient? {
+    private func activeClient() -> JamfService? {
         if let client { return client }
         guard let configuration else { return nil }
-        let newClient = JamfClient(config: configuration)
+        let newClient = JamfService(configuration: configuration)
         client = newClient
         return newClient
     }
@@ -266,11 +342,11 @@ final class JamfStore {
     /// Returns nil on success, or the error to show.
     func saveAssetTag(_ tag: String, record: JamfDeviceRecord, for device: USBDevice) async -> JamfError? {
         guard let query = device.jamfQuery, let client = activeClient() else {
-            return .authenticationFailed("Jamf Pro is not configured")
+            return .authenticationFailed("\(productName) is not configured")
         }
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            try await client.updateAssetTag(trimmed, kind: record.kind, jamfID: record.jamfID)
+            try await client.updateAssetTag(trimmed, record: record)
             var updated = record
             updated.assetTag = trimmed.isEmpty ? nil : trimmed
             lookupStates[query] = .found(updated)
@@ -282,16 +358,18 @@ final class JamfStore {
         }
     }
 
-    /// Validates the current credentials by requesting a fresh token.
+    /// Validates the current settings against the server.
     func testConnection() async -> Result<Void, JamfError> {
         guard let configuration else {
-            let missing = authMethod == .platform
-                ? "Fill in the client ID, client secret and a valid environment ID first"
-                : "Fill in the server URL and credentials first"
+            let missing = switch authMethod {
+            case .platform: "Fill in the client ID, client secret and a valid environment ID first"
+            case .jamfSchool: "Fill in the Jamf School URL, Network ID and API key first"
+            default: "Fill in the server URL and credentials first"
+            }
             return .failure(.authenticationFailed(missing))
         }
         do {
-            try await JamfClient(config: configuration).testConnection()
+            try await JamfService(configuration: configuration).testConnection()
             return .success(())
         } catch let error as JamfError {
             return .failure(error)

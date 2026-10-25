@@ -169,7 +169,7 @@ struct DeviceRow: View {
         // A booted device's serial can only come from Jamf — be precise
         // about why it isn't available.
         switch jamfState {
-        case .notConfigured: return "Serial requires Jamf Pro (not configured)"
+        case .notConfigured: return "Serial requires Jamf (not configured)"
         case .noMatch: return "Serial unknown — no Jamf match"
         case .multipleMatches: return "Serial ambiguous — multiple Jamf matches"
         case .failed: return "Serial unavailable — Jamf lookup failed"

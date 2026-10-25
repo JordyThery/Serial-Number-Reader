@@ -31,6 +31,8 @@ nonisolated enum JamfCredentials: Sendable, Equatable {
     /// Jamf Platform API integration from Jamf Account, scoped to a platform
     /// environment (the scope Jamf recommends; tenant scope is not offered).
     case platform(region: PlatformRegion, clientID: String, clientSecret: String, environmentID: String)
+    /// Jamf School: Network ID and API key (HTTP Basic).
+    case jamfSchool(networkID: String, apiKey: String)
 }
 
 nonisolated struct JamfConfiguration: Sendable, Equatable {
@@ -38,8 +40,9 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
     /// `https://server/api` for Jamf Pro, `https://{region}.api.jamfcloud.com/pro`
     /// for the Platform API gateway.
     let apiBaseURL: URL
-    let tokenURL: URL
-    /// The Jamf Pro web interface, for "Open in Jamf Pro" links. Optional for
+    /// nil for Jamf School, which authenticates every request directly.
+    let tokenURL: URL?
+    /// The web interface, for "Open in Jamf Pro/School" links. Optional for
     /// the Platform API, which doesn't expose the instance's address.
     let webBaseURL: URL?
     let credentials: JamfCredentials
@@ -48,6 +51,14 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
         if case .platform = credentials { return true }
         return false
     }
+
+    var isJamfSchool: Bool {
+        if case .jamfSchool = credentials { return true }
+        return false
+    }
+
+    /// The product name shown in the UI.
+    var productName: String { isJamfSchool ? "Jamf School" : "Jamf Pro" }
 
     /// Request headers that identify the context; the gateway serves every
     /// customer in a region from one host.
@@ -82,6 +93,12 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
                 apiBaseURL: region.gatewayURL.appending(path: "pro"),
                 tokenURL: region.gatewayURL.appending(path: "auth/token"),
                 webBaseURL: serverURL, credentials: credentials)
+        case .jamfSchool(let networkID, let apiKey):
+            guard !networkID.isEmpty, !apiKey.isEmpty, let serverURL else { return nil }
+            // Paths such as "api/devices" are appended by JamfSchoolClient.
+            return JamfConfiguration(
+                apiBaseURL: serverURL, tokenURL: nil,
+                webBaseURL: serverURL, credentials: credentials)
         }
     }
 
@@ -114,12 +131,12 @@ nonisolated enum JamfError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .authenticationFailed(let detail): "Jamf authentication failed: \(detail)"
-        case .httpError(let code, let detail): "Jamf Pro returned HTTP \(code): \(detail)"
+        case .httpError(let code, let detail): "Jamf returned HTTP \(code): \(detail)"
         case .networkFailure(let detail): "Network error: \(detail)"
         case .decodingFailure(let detail): "Unexpected Jamf response: \(detail)"
         case .invalidIdentifier: "The device identifier contains unexpected characters"
-        case .noMatch: "No matching device found in Jamf Pro"
-        case .multipleMatches(let count): "\(count) devices in Jamf Pro match — record is ambiguous"
+        case .noMatch: "No matching device found in Jamf"
+        case .multipleMatches(let count): "\(count) devices in Jamf match — record is ambiguous"
         }
     }
 }
@@ -130,6 +147,8 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
     enum Kind: String, Sendable {
         case mobileDevice = "Mobile Device"
         case computer = "Computer"
+        /// A Jamf School device; `jamfID` is its UDID.
+        case schoolDevice = "Jamf School Device"
     }
 
     let kind: Kind
@@ -147,10 +166,16 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
     let email: String?
     let lastInventoryDate: Date?
 
-    /// Deep link to the record in the Jamf Pro web UI.
+    /// Deep link to the record in the Jamf Pro or Jamf School web UI.
     func webURL(baseURL: URL) -> URL? {
-        let page = kind == .computer ? "computers.html" : "mobileDevices.html"
-        return URL(string: "\(baseURL.absoluteString)/\(page)?id=\(jamfID)&o=r")
+        switch kind {
+        case .schoolDevice:
+            return URL(string: "\(baseURL.absoluteString)/devices/details/\(jamfID)")
+        case .computer:
+            return URL(string: "\(baseURL.absoluteString)/computers.html?id=\(jamfID)&o=r")
+        case .mobileDevice:
+            return URL(string: "\(baseURL.absoluteString)/mobileDevices.html?id=\(jamfID)&o=r")
+        }
     }
 }
 
@@ -196,7 +221,7 @@ actor JamfClient {
     /// Serials and UDIDs are alphanumeric plus hyphens. The values originate
     /// from USB descriptors — device-controlled data — so anything else is
     /// rejected rather than interpolated into an RSQL filter.
-    private static func validatedIdentifier(_ value: String) throws -> String {
+    static func validatedIdentifier(_ value: String) throws -> String {
         guard !value.isEmpty, value.count <= 64,
               value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" })
         else { throw JamfError.invalidIdentifier }
@@ -234,6 +259,9 @@ actor JamfClient {
             // Same OAuth client-credentials exchange, against the regional
             // gateway; tokens last 900 s and are renewed like any other.
             token = try await fetchOAuthToken(clientID: clientID, clientSecret: clientSecret)
+        case .jamfSchool:
+            // Served by JamfSchoolClient, which needs no tokens.
+            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
         }
         cachedToken = token
         return token.value
@@ -242,7 +270,8 @@ actor JamfClient {
     /// OAuth client credentials (form-encoded): `/api/oauth/token` on Jamf Pro,
     /// `/auth/token` on the Platform API gateway.
     private func fetchOAuthToken(clientID: String, clientSecret: String) async throws -> (value: String, expiry: Date) {
-        var request = URLRequest(url: config.tokenURL)
+        guard let tokenURL = config.tokenURL else { throw JamfError.networkFailure("no token address") }
+        var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var form = URLComponents()
@@ -268,7 +297,8 @@ actor JamfClient {
     /// Classic user account: POST /api/v1/auth/token with Basic auth.
     /// Returns a bearer token (default lifetime 30 minutes).
     private func fetchBasicAuthToken(username: String, password: String) async throws -> (value: String, expiry: Date) {
-        var request = URLRequest(url: config.tokenURL)
+        guard let tokenURL = config.tokenURL else { throw JamfError.networkFailure("no token address") }
+        var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         let basic = Data("\(username):\(password)".utf8).base64EncodedString()
         request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
@@ -385,6 +415,8 @@ actor JamfClient {
         case .computer:
             path = "v1/computers-inventory-detail/\(jamfID)"
             body = ["general": ["assetTag": assetTag]]
+        case .schoolDevice:
+            throw JamfError.httpError(400, "Jamf School records are updated by the Jamf School client")
         }
         let data = try JSONSerialization.data(withJSONObject: body)
         _ = try await authorizedRequest(method: "PATCH", path: path, queryItems: [], body: data)

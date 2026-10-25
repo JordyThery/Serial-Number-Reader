@@ -10,6 +10,7 @@ nonisolated enum KeychainStore {
         case clientSecret
         case password = "jamfPassword"
         case platformClientSecret = "jamfPlatformClientSecret"
+        case jamfSchoolAPIKey = "jamfSchoolAPIKey"
     }
 
     private static let service = "be.jordythery.SerialNumberReader.jamf"

@@ -23,10 +23,10 @@ struct SettingsView: View {
                 .pickerStyle(.radioGroup)
             }
 
-            if jamf.authMethod == .platform {
-                platformSections
-            } else {
-                jamfProSections
+            switch jamf.authMethod {
+            case .platform: platformSections
+            case .jamfSchool: jamfSchoolSections
+            case .clientCredentials, .basic: jamfProSections
             }
 
             Section {
@@ -147,6 +147,27 @@ struct SettingsView: View {
             Text("Jamf Pro Web Address")
         } footer: {
             Text("Optional. Used only for “Open in Jamf Pro” links — the Platform API doesn't provide your instance's address.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Jamf School
+
+    @ViewBuilder
+    private var jamfSchoolSections: some View {
+        Section {
+            TextField("Jamf School URL", text: $jamf.schoolURLString, prompt: Text("https://yourschool.jamfcloud.com"))
+                .textContentType(.URL)
+                .autocorrectionDisabled()
+            TextField("Network ID", text: $jamf.schoolNetworkID)
+                .autocorrectionDisabled()
+                .monospaced()
+            SecureField("API Key", text: $jamf.schoolAPIKey)
+        } header: {
+            Text("Jamf School")
+        } footer: {
+            Text("Find the Network ID and create an API key in Jamf School under Organization → Settings → API. The key needs read access to devices, plus write access to edit asset tags. The API key is stored in the Keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -282,13 +282,13 @@ struct DeviceDetailView: View {
                 unavailableSerialRow("Not present in the Jamf record")
             }
         case .notConfigured:
-            unavailableSerialRow("Requires a Jamf Pro lookup — configure Jamf in Settings")
+            unavailableSerialRow("Requires a Jamf lookup — configure Jamf in Settings")
         case .noMatch:
             unavailableSerialRow("No matching Jamf record")
         case .multipleMatches:
             unavailableSerialRow("Ambiguous — multiple Jamf records match")
         case .failed:
-            unavailableSerialRow("Jamf lookup failed — see the Jamf Pro section")
+            unavailableSerialRow("Jamf lookup failed — see the \(jamf.productName) section")
         case .unavailable(let reason):
             unavailableSerialRow(reason)
         case .loading:
@@ -346,10 +346,10 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private var jamfSection: some View {
-        Section("Jamf Pro") {
+        Section(jamf.productName) {
             switch jamf.state(for: device) {
             case .notConfigured:
-                Text("Jamf Pro is not configured.")
+                Text("Jamf is not configured.")
                     .foregroundStyle(.secondary)
                 SettingsLink {
                     Text("Open Settings…")
@@ -370,12 +370,12 @@ struct DeviceDetailView: View {
                 jamfRecordRows(record)
 
             case .noMatch:
-                Label("No matching device in Jamf Pro.", systemImage: "questionmark.circle")
+                Label("No matching device in \(jamf.productName).", systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)
                 retryButton
 
             case .multipleMatches(let count):
-                Label("\(count) devices match in Jamf Pro — the record is ambiguous.", systemImage: "exclamationmark.triangle")
+                Label("\(count) devices match in \(jamf.productName) — the record is ambiguous.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                 retryButton
 
@@ -431,7 +431,7 @@ struct DeviceDetailView: View {
         HStack {
             if let baseURL = jamf.webBaseURL, let url = record.webURL(baseURL: baseURL) {
                 Link(destination: url) {
-                    Label("Open in Jamf Pro", systemImage: "arrow.up.forward.app")
+                    Label("Open in \(jamf.productName)", systemImage: "arrow.up.forward.app")
                 }
             }
             Spacer()
@@ -445,7 +445,7 @@ struct DeviceDetailView: View {
         } label: {
             Label("Retry Lookup", systemImage: "arrow.clockwise")
         }
-        .help("Run the Jamf Pro lookup again")
+        .help("Run the \(jamf.productName) lookup again")
     }
 }
 
