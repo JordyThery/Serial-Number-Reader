@@ -1,3 +1,5 @@
+import JTKit
+import os
 import SwiftUI
 
 @main
@@ -35,7 +37,13 @@ struct SerialNumberReaderApp: App {
     @State private var monitor = USBDeviceMonitor()
     @State private var jamf = JamfStore()
     @State private var actions = DeviceActionController()
-    @State private var updates = UpdateChecker()
+    @State private var updates: UpdateChecker = {
+        let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
+        return UpdateChecker(
+            configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader"),
+            activity: { logger.info("\($0, privacy: .public)") }
+        )
+    }()
 
     var body: some Scene {
         WindowGroup {

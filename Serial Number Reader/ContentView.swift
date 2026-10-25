@@ -1,3 +1,4 @@
+import JTKit
 import SwiftUI
 
 struct ContentView: View {
@@ -248,5 +249,5 @@ struct ModeBadge: View {
 #Preview {
     ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController(),
                 restore: RestoreController())
-        .environment(UpdateChecker())
+        .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }
