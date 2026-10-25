@@ -25,7 +25,7 @@ struct ContentView: View {
                 } else {
                     List(monitor.devices, selection: $selectedDeviceID) { device in
                         DeviceRow(device: device, jamfState: jamf.state(for: device),
-                                  isPartOfRestore: restore.isPart(of: device))
+                                  partOfJob: restore.jobKind(involving: device))
                             .contextMenu {
                                 Button("Remove from List", role: .destructive) {
                                     monitor.removeFromList(device.id)
@@ -102,9 +102,9 @@ struct ContentView: View {
 struct DeviceRow: View {
     let device: USBDevice
     let jamfState: JamfLookupState
-    /// The device is passing through this mode as part of a Restore
+    /// Set when the device is passing through this mode as part of a Restore
     /// or Revive, so missing identifiers are expected rather than a problem.
-    var isPartOfRestore = false
+    var partOfJob: RestoreController.Job.Kind? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -161,7 +161,7 @@ struct DeviceRow: View {
 
     private var serialLine: String {
         if let serial = device.serialNumber ?? jamfSerial { return serial }
-        if isPartOfRestore { return "Part of the restore — no serial in this stage" }
+        if let partOfJob { return "Part of the \(partOfJob == .restore ? "restore" : "revive") — no serial in this stage" }
         // Booted devices, and DFU devices identified through Configurator,
         // can only get their serial from Jamf.
         let serialComesFromJamf = device.mode == .normal || (device.mode == .dfu && device.jamfQuery != nil)

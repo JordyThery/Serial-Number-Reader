@@ -270,18 +270,19 @@ struct RestoreBanner: View {
                             .lineLimit(2)
                     }
                     Spacer()
+                    // Steps without a measurable percentage get a spinner;
+                    // an indeterminate bar draws as a stray dot on macOS.
+                    if job.state == .running, job.fraction == nil {
+                        ProgressView().controlSize(.small)
+                    }
                     Button(showsLog ? "Hide Log" : "Show Log") { showsLog.toggle() }
                         .buttonStyle(.link)
                     if job.state != .running {
                         Button("Dismiss") { restore.dismiss() }
                     }
                 }
-                if job.state == .running {
-                    if let fraction = job.fraction {
-                        ProgressView(value: fraction)
-                    } else {
-                        ProgressView().progressViewStyle(.linear)
-                    }
+                if job.state == .running, let fraction = job.fraction {
+                    ProgressView(value: fraction)
                 }
                 if showsLog {
                     ScrollView {

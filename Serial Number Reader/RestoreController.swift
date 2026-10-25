@@ -40,19 +40,19 @@ final class RestoreController {
 
     var isRunning: Bool { job?.state == .running }
 
-    /// Whether a list row belongs to the current (or just finished) job. A
-    /// restore passes the device through Recovery and a restore OS, which
-    /// appear as separate rows without a serial number.
-    func isPart(of device: USBDevice) -> Bool {
+    /// The kind of the current (or just finished) job a list row belongs to,
+    /// if any. A restore or revive passes the device through Recovery and a
+    /// restore OS, which appear as separate rows without a serial number.
+    func jobKind(involving device: USBDevice) -> Job.Kind? {
         guard let job,
               let wanted = Configurator.normalizedECID(job.ecid),
               let ecid = device.configuratorECID,
-              let have = Configurator.normalizedECID(ecid)
-        else { return false }
-        guard wanted == have, device.connectedAt >= job.startedAt else { return false }
+              let have = Configurator.normalizedECID(ecid),
+              wanted == have, device.connectedAt >= job.startedAt
+        else { return nil }
         // Recovery/DFU stages stay labelled until the banner is dismissed; a
         // booted row only while running — afterwards it's the restored device.
-        return device.mode != .normal || job.state == .running
+        return device.mode != .normal || job.state == .running ? job.kind : nil
     }
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Restore")
