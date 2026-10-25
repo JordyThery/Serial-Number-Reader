@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import Observation
 import os
 
@@ -51,195 +52,65 @@ nonisolated enum JamfService: Sendable {
     }
 }
 
-/// Owns the Jamf settings (URL + client ID in UserDefaults, secret in the
-/// Keychain), the API client, and per-device lookup results.
+/// Owns the active Jamf connection's API client and per-device lookup
+/// results. The saved connections are in `connections`.
 @MainActor
 @Observable
 final class JamfStore {
 
-    /// How to authenticate. Raw values are persisted in UserDefaults.
-    enum AuthMethod: String, CaseIterable, Identifiable {
-        case clientCredentials
-        case basic
-        case platform
-        case jamfSchool
+    let connections: JamfConnectionStore
 
-        var id: Self { self }
-        var label: String {
-            switch self {
-            case .clientCredentials: "Jamf Pro — API Client (OAuth)"
-            case .basic: "Jamf Pro — Username & Password (Classic)"
-            case .platform: "Jamf Pro — Jamf Platform API"
-            case .jamfSchool: "Jamf School"
-            }
-        }
-    }
-
-    private enum DefaultsKey {
-        static let serverURL = "jamfServerURL"
-        static let clientID = "jamfClientID"
-        static let username = "jamfUsername"
-        static let authMethod = "jamfAuthMethod"
-        static let platformRegion = "jamfPlatformRegion"
-        static let platformClientID = "jamfPlatformClientID"
-        static let platformEnvironmentID = "jamfPlatformEnvironmentID"
-        static let schoolURL = "jamfSchoolURL"
-        static let schoolNetworkID = "jamfSchoolNetworkID"
-    }
-
-    var serverURLString: String {
-        didSet {
-            UserDefaults.standard.set(serverURLString, forKey: DefaultsKey.serverURL)
-            // Only the direct Jamf Pro methods look devices up through this
-            // address. With the Platform API it only feeds "Open in Jamf Pro"
-            // links (computed live), and Jamf School has its own address.
-            if authMethod == .clientCredentials || authMethod == .basic { invalidateClient() }
-        }
-    }
-
-    var authMethod: AuthMethod {
-        didSet {
-            UserDefaults.standard.set(authMethod.rawValue, forKey: DefaultsKey.authMethod)
-            invalidateClient()
-        }
-    }
-
-    var clientID: String {
-        didSet {
-            UserDefaults.standard.set(clientID, forKey: DefaultsKey.clientID)
-            invalidateClient()
-        }
-    }
-
-    /// Backed by the Keychain — never stored in UserDefaults.
-    var clientSecret: String {
-        didSet {
-            KeychainStore.save(clientSecret, account: .clientSecret)
-            invalidateClient()
-        }
-    }
-
-    var username: String {
-        didSet {
-            UserDefaults.standard.set(username, forKey: DefaultsKey.username)
-            invalidateClient()
-        }
-    }
-
-    /// Backed by the Keychain — never stored in UserDefaults.
-    var password: String {
-        didSet {
-            KeychainStore.save(password, account: .password)
-            invalidateClient()
-        }
-    }
-
-    var platformRegion: PlatformRegion {
-        didSet {
-            UserDefaults.standard.set(platformRegion.rawValue, forKey: DefaultsKey.platformRegion)
-            invalidateClient()
-        }
-    }
-
-    var platformClientID: String {
-        didSet {
-            UserDefaults.standard.set(platformClientID, forKey: DefaultsKey.platformClientID)
-            invalidateClient()
-        }
-    }
-
-    /// Backed by the Keychain — never stored in UserDefaults.
-    var platformClientSecret: String {
-        didSet {
-            KeychainStore.save(platformClientSecret, account: .platformClientSecret)
-            invalidateClient()
-        }
-    }
-
-    /// Not a secret: it identifies the environment, like a server address.
-    var platformEnvironmentID: String {
-        didSet {
-            UserDefaults.standard.set(platformEnvironmentID, forKey: DefaultsKey.platformEnvironmentID)
-            invalidateClient()
-        }
-    }
-
-    /// Kept separate from the Jamf Pro server URL, so switching between the
-    /// two products doesn't lose either address.
-    var schoolURLString: String {
-        didSet {
-            UserDefaults.standard.set(schoolURLString, forKey: DefaultsKey.schoolURL)
-            invalidateClient()
-        }
-    }
-
-    var schoolNetworkID: String {
-        didSet {
-            UserDefaults.standard.set(schoolNetworkID, forKey: DefaultsKey.schoolNetworkID)
-            invalidateClient()
-        }
-    }
-
-    /// Backed by the Keychain — never stored in UserDefaults.
-    var schoolAPIKey: String {
-        didSet {
-            KeychainStore.save(schoolAPIKey, account: .jamfSchoolAPIKey)
-            invalidateClient()
-        }
-    }
+    /// The active connection with its secret; nil when it is incomplete.
+    private(set) var configuration: JamfConfiguration?
 
     private(set) var lookupStates: [JamfQuery: JamfLookupState] = [:]
-    /// Bumped (debounced) whenever the configuration changes; the UI observes
-    /// it to re-run lookups, and in-flight results from an older generation
-    /// are discarded instead of being cached against the new server.
+    /// Bumped whenever the configuration changes; the UI observes it to re-run
+    /// lookups, and in-flight results from an older generation are discarded
+    /// instead of being cached against the new server.
     private(set) var configurationGeneration = 0
 
     @ObservationIgnored private var client: JamfService?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
-    @ObservationIgnored private var invalidationTask: Task<Void, Never>?
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
 
-    init() {
-        serverURLString = UserDefaults.standard.string(forKey: DefaultsKey.serverURL) ?? ""
-        authMethod = UserDefaults.standard.string(forKey: DefaultsKey.authMethod)
-            .flatMap(AuthMethod.init(rawValue:)) ?? .clientCredentials
-        clientID = UserDefaults.standard.string(forKey: DefaultsKey.clientID) ?? ""
-        clientSecret = KeychainStore.load(account: .clientSecret) ?? ""
-        username = UserDefaults.standard.string(forKey: DefaultsKey.username) ?? ""
-        password = KeychainStore.load(account: .password) ?? ""
-        platformRegion = UserDefaults.standard.string(forKey: DefaultsKey.platformRegion)
-            .flatMap(PlatformRegion.init(rawValue:)) ?? .eu
-        platformClientID = UserDefaults.standard.string(forKey: DefaultsKey.platformClientID) ?? ""
-        platformClientSecret = KeychainStore.load(account: .platformClientSecret) ?? ""
-        platformEnvironmentID = UserDefaults.standard.string(forKey: DefaultsKey.platformEnvironmentID) ?? ""
-        schoolURLString = UserDefaults.standard.string(forKey: DefaultsKey.schoolURL) ?? ""
-        schoolNetworkID = UserDefaults.standard.string(forKey: DefaultsKey.schoolNetworkID) ?? ""
-        schoolAPIKey = KeychainStore.load(account: .jamfSchoolAPIKey) ?? ""
+    /// - Parameter connections: the saved connections; the app's own by default.
+    init(connections: JamfConnectionStore? = nil) {
+        self.connections = connections ?? JamfConnectionStore()
+        configuration = activeConfiguration()
+        observeConnections()
     }
 
-    var configuration: JamfConfiguration? {
-        let credentials: JamfCredentials = switch authMethod {
-        case .clientCredentials:
-            .clientCredentials(clientID: clientID, clientSecret: clientSecret)
-        case .basic:
-            .basic(username: username, password: password)
-        case .platform:
-            .platform(
-                region: platformRegion,
-                clientID: platformClientID.trimmingCharacters(in: .whitespacesAndNewlines),
-                clientSecret: platformClientSecret,
-                environmentID: platformEnvironmentID.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// Builds the client configuration for a connection and its secret, or
+    /// nil when incomplete or invalid.
+    nonisolated static func configuration(for record: JamfConnection, secret: String) -> JamfConfiguration? {
+        let credentials: JamfCredentials
+        let url: String
+        switch record.service {
+        case .jamfPro:
+            credentials = record.signIn == .usernamePassword
+                ? .basic(username: record.username, password: secret)
+                : .clientCredentials(clientID: record.clientID, clientSecret: secret)
+            url = record.serverURL
+        case .jamfPlatform:
+            credentials = .platform(
+                region: PlatformRegion(rawValue: record.region.rawValue) ?? .eu,
+                clientID: record.clientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                clientSecret: secret,
+                environmentID: record.environmentID.trimmingCharacters(in: .whitespacesAndNewlines))
+            url = record.jamfProWebURL
         case .jamfSchool:
-            .jamfSchool(
-                networkID: schoolNetworkID.trimmingCharacters(in: .whitespacesAndNewlines),
-                apiKey: schoolAPIKey.trimmingCharacters(in: .whitespacesAndNewlines))
+            credentials = .jamfSchool(
+                networkID: record.clientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                apiKey: secret.trimmingCharacters(in: .whitespacesAndNewlines))
+            url = record.serverURL
+        case .intune, .appleBusinessManager, .appleSchoolManager:
+            return nil
         }
-        let url = authMethod == .jamfSchool ? schoolURLString : serverURLString
         return JamfConfiguration.make(urlString: url, credentials: credentials)
     }
 
     /// "Jamf Pro" or "Jamf School", for section titles and messages.
-    var productName: String { authMethod == .jamfSchool ? "Jamf School" : "Jamf Pro" }
+    var productName: String { connections.activeConnection?.service == .jamfSchool ? "Jamf School" : "Jamf Pro" }
 
     var isConfigured: Bool { configuration != nil }
 
@@ -247,25 +118,38 @@ final class JamfStore {
     /// without the optional Jamf Pro URL).
     var webBaseURL: URL? { configuration?.webBaseURL }
 
-    /// Whether the Environment ID field holds something that looks like an ID;
-    /// an empty field is not flagged as an error.
-    var platformEnvironmentIDLooksValid: Bool {
-        let trimmed = platformEnvironmentID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || JamfConfiguration.isValidEnvironmentID(trimmed)
+    private func activeConfiguration() -> JamfConfiguration? {
+        guard let record = connections.activeConnection else { return nil }
+        return Self.configuration(for: record, secret: connections.secret(for: record) ?? "")
+    }
+
+    /// Follows the connection in use: switching to another one, or saving
+    /// it in Settings (the list is saved with every change, secrets included).
+    private func observeConnections() {
+        withObservationTracking {
+            _ = connections.activeConnection
+        } onChange: { [weak self] in
+            // Called before the change: read the new values afterwards.
+            Task { @MainActor [weak self] in
+                self?.connectionsChanged()
+                self?.observeConnections()
+            }
+        }
+    }
+
+    private func connectionsChanged() {
+        let updated = activeConfiguration()
+        guard updated != configuration else { return }
+        configuration = updated
+        invalidateClient()
     }
 
     private func invalidateClient() {
         client = nil
-        // Debounced: typing in Settings changes the configuration on every
-        // keystroke. Once the user pauses, drop cached results (they may
-        // belong to a different server) and signal observers to re-run.
-        invalidationTask?.cancel()
-        invalidationTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(800))
-            guard let self, !Task.isCancelled else { return }
-            self.lookupStates.removeAll()
-            self.configurationGeneration += 1
-        }
+        // Drop cached results (they may belong to a different server) and
+        // signal observers to re-run.
+        lookupStates.removeAll()
+        configurationGeneration += 1
     }
 
     private func activeClient() -> JamfService? {
@@ -358,23 +242,25 @@ final class JamfStore {
         }
     }
 
-    /// Validates the current settings against the server.
-    func testConnection() async -> Result<Void, JamfError> {
-        guard let configuration else {
-            let missing = switch authMethod {
-            case .platform: "Fill in the client ID, client secret and a valid environment ID first"
+    /// Test Connection in Settings, with the editor's values, saved or not.
+    /// A secret typed in the editor is used instead of the stored one.
+    func testConnection(_ record: JamfConnection, typedSecret: String?) async throws -> String {
+        let secret = typedSecret ?? connections.secret(for: record) ?? ""
+        guard let configuration = Self.configuration(for: record, secret: secret) else {
+            let missing = switch record.service {
+            case .jamfPlatform: "Fill in the client ID, client secret and a valid environment ID first"
             case .jamfSchool: "Fill in the Jamf School URL, Network ID and API key first"
             default: "Fill in the server URL and credentials first"
             }
-            return .failure(.authenticationFailed(missing))
+            throw JamfError.authenticationFailed(missing)
         }
         do {
             try await JamfService(configuration: configuration).testConnection()
-            return .success(())
         } catch let error as JamfError {
-            return .failure(error)
+            throw error
         } catch {
-            return .failure(.networkFailure(error.localizedDescription))
+            throw JamfError.networkFailure(error.localizedDescription)
         }
+        return "Authenticated successfully"
     }
 }

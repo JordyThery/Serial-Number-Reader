@@ -89,8 +89,14 @@ struct ContentView: View {
                 selectedDeviceID = monitor.devices.first?.id
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                @Bindable var connections = jamf.connections
+                ConnectionPicker(store: connections.connections, selection: $connections.activeID)
+            }
+        }
         .onChange(of: jamf.configurationGeneration) {
-            // Settings changed: cached results were dropped — look up again.
+            // The connection changed: cached results were dropped — look up again.
             for device in monitor.devices {
                 jamf.lookupIfNeeded(for: device)
             }

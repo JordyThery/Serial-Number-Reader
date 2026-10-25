@@ -35,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor()
-    @State private var jamf = JamfStore()
+    @State private var jamf = JamfStore(connections: JamfConnectionStore.isUnitTestHost
+                                        ? .forUnitTestHost() : JamfConnectionStore())
     @State private var actions = DeviceActionController()
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
@@ -54,6 +55,12 @@ struct SerialNumberReaderApp: App {
         }
         .commands {
             AppInfoCommands(appName: "Serial Number Reader") { updates.checkManually() }
+            // The toolbar picker's items, as JTKit's Connection menu.
+            ConnectionCommands(
+                store: jamf.connections.connections,
+                selection: Binding(get: { jamf.connections.activeID },
+                                   set: { jamf.connections.activeID = $0 })
+            )
             CommandGroup(replacing: .importExport) {
                 Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
                     .keyboardShortcut("e")
@@ -64,10 +71,9 @@ struct SerialNumberReaderApp: App {
             }
         }
 
-        SettingsWindow(updates: updates) {
-            SettingsTab("Connections", systemImage: "network") {
-                SettingsView(jamf: jamf)
-            }
+        // JTKit's Settings window: General (Appearance), Connections, Updates.
+        SettingsWindow(updates: updates, opensTabsByName: true) {
+            SettingsView(jamf: jamf)
         }
 
         AboutWindow(configuration: .serialNumberReader)
