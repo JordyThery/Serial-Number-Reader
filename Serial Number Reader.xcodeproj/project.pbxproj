@@ -6,6 +6,10 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		087B3265308E407A00D0CB8A /* JTKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0A0000000000000000000002 /* JTKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		08FC3F2630761881007EB97F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -38,6 +42,7 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				087B3265308E407A00D0CB8A /* JTKit in Frameworks */,
 			);
 		};
 		08FC3F1F30761880007EB97F /* Frameworks */ = {
@@ -517,7 +522,7 @@
 			repositoryURL = "https://github.com/JordyThery/JTKit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.2.0;
+				minimumVersion = 0.3.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
