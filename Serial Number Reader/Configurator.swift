@@ -99,6 +99,9 @@ nonisolated enum Configurator {
                     process.standardOutput = output
                     process.standardError = errors
                     try process.run()
+                    // Drain stderr concurrently: if its pipe filled up while
+                    // only stdout was being read, cfgutil would block forever.
+                    let errorOutput = drainInBackground(errors)
 
                     var lastError: String?
                     for try await line in output.fileHandleForReading.bytes.lines {
@@ -107,7 +110,7 @@ nonisolated enum Configurator {
                         if event != .finished { continuation.yield(event) }
                     }
                     process.waitUntilExit()
-                    let stderr = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                    let stderr = String(decoding: errorOutput(), as: UTF8.self)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
 
                     if process.terminationStatus == 0, lastError == nil {
@@ -215,6 +218,23 @@ nonisolated enum Configurator {
 
     // MARK: - Process
 
+    /// Reads a pipe to its end on a background queue; the returned closure
+    /// waits for and returns everything read.
+    private static func drainInBackground(_ pipe: Pipe) -> @Sendable () -> Data {
+        final class Box: @unchecked Sendable { var data = Data() }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        let handle = pipe.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            box.data = handle.readDataToEndOfFile()
+            done.signal()
+        }
+        return {
+            done.wait()
+            return box.data
+        }
+    }
+
     private struct Completed {
         let output: Data
         let errorText: String
@@ -230,9 +250,10 @@ nonisolated enum Configurator {
         process.standardOutput = output
         process.standardError = errors
         try process.run()
+        let errorOutput = drainInBackground(errors)
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        let errorData = errorOutput()
         return Completed(
             output: data,
             errorText: String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),

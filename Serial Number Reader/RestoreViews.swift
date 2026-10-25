@@ -153,25 +153,33 @@ struct RestoreSheet: View {
     }
 
     /// Rejects an IPSW for another model or one Apple no longer signs before
-    /// anything is erased.
+    /// anything is erased. If another file is chosen while a check runs, the
+    /// stale check's results are discarded.
     private func checkIPSW(_ url: URL) async {
         checkingIPSW = true
         ipswInfo = nil
         ipswError = nil
         ipswSigned = nil
-        defer { checkingIPSW = false }
+        // Only the check for the currently chosen file may publish results.
+        var isCurrent: Bool { ipswURL == url }
+        defer { if isCurrent { checkingIPSW = false } }
         do {
             let info = try await Task.detached(priority: .userInitiated) { try IPSWInfo.read(from: url) }.value
+            guard isCurrent else { return }
             if let productType, !info.supports(productType) {
                 ipswError = "This IPSW doesn't support \(device.modelDisplayName) (\(productType))."
                 return
             }
-            ipswInfo = info
             if let productType {
-                ipswSigned = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion)
+                let signed = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion)
+                guard isCurrent else { return }
+                ipswSigned = signed
             }
+            // Published last, together with the signing status, so the
+            // restore button can't enable on a half-finished check.
+            ipswInfo = info
         } catch {
-            ipswError = error.localizedDescription
+            if isCurrent { ipswError = error.localizedDescription }
         }
     }
 
