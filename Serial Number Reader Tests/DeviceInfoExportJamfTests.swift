@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import Testing
 @testable import Serial_Number_Reader
 
@@ -96,10 +97,10 @@ struct JamfConfigurationTests {
         let config = try #require(JamfConfiguration.make(
             urlString: "",
             credentials: .platform(region: .eu, clientID: "id", clientSecret: "secret", environmentID: environmentID)))
-        #expect(config.tokenURL?.absoluteString == "https://eu.api.jamfcloud.com/auth/token")
-        #expect(config.apiBaseURL.appending(path: "v2/mobile-devices/detail").absoluteString
-                == "https://eu.api.jamfcloud.com/pro/v2/mobile-devices/detail")
-        #expect(config.contextHeaders == ["X-Environment-Id": environmentID])
+        let connection = try #require(config.connection)
+        #expect(connection.service == .jamfPlatform)
+        #expect(connection.jamfBaseURL?.absoluteString == "https://eu.api.jamfcloud.com")
+        #expect(connection.environmentID == environmentID)
         #expect(config.webBaseURL == nil)
     }
 
@@ -109,7 +110,7 @@ struct JamfConfigurationTests {
             urlString: "yourorg.jamfcloud.com/",
             credentials: .platform(region: .us, clientID: "id", clientSecret: "secret", environmentID: environmentID)))
         #expect(config.webBaseURL?.absoluteString == "https://yourorg.jamfcloud.com")
-        #expect(config.tokenURL?.host() == "us.api.jamfcloud.com")
+        #expect(config.connection?.jamfBaseURL?.host() == "us.api.jamfcloud.com")
     }
 
     @Test("Incomplete or invalid Platform settings are not a configuration")
@@ -125,15 +126,19 @@ struct JamfConfigurationTests {
         let config = try #require(JamfConfiguration.make(
             urlString: "https://yourorg.jamfcloud.com",
             credentials: .clientCredentials(clientID: "id", clientSecret: "secret")))
-        #expect(config.tokenURL?.absoluteString == "https://yourorg.jamfcloud.com/api/oauth/token")
-        #expect(config.apiBaseURL.appending(path: "v1/computers-inventory").absoluteString
-                == "https://yourorg.jamfcloud.com/api/v1/computers-inventory")
-        #expect(config.contextHeaders.isEmpty)
+        let connection = try #require(config.connection)
+        #expect(connection.service == .jamfPro)
+        #expect(connection.signIn == .apiClient)
+        #expect(connection.jamfBaseURL?.absoluteString == "https://yourorg.jamfcloud.com")
+        #expect(connection.clientID == "id")
 
+        // Typed without https://: the app adds it, as before.
         let basic = try #require(JamfConfiguration.make(
             urlString: "yourorg.jamfcloud.com",
             credentials: .basic(username: "user", password: "pass")))
-        #expect(basic.tokenURL?.absoluteString == "https://yourorg.jamfcloud.com/api/v1/auth/token")
+        #expect(basic.connection?.signIn == .usernamePassword)
+        #expect(basic.connection?.username == "user")
+        #expect(basic.connection?.jamfBaseURL?.absoluteString == "https://yourorg.jamfcloud.com")
     }
 }
 

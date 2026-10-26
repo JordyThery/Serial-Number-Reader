@@ -16,44 +16,6 @@ nonisolated enum JamfLookupState: Equatable, Sendable {
     case failed(String)
 }
 
-/// The configured backend — Jamf Pro (directly or through the Platform API)
-/// or Jamf School — behind the operations the store needs.
-nonisolated enum JamfService: Sendable {
-    case pro(JamfClient)
-    case school(JamfSchoolClient)
-
-    /// - Parameter recorder: sends and records each request (activity log).
-    init(configuration: JamfConfiguration, recorder: RequestRecorder) {
-        if case .jamfSchool(let networkID, let apiKey) = configuration.credentials {
-            self = .school(JamfSchoolClient(baseURL: configuration.apiBaseURL, networkID: networkID,
-                                            apiKey: apiKey, recorder: recorder))
-        } else {
-            self = .pro(JamfClient(config: configuration, recorder: recorder))
-        }
-    }
-
-    func lookup(_ query: JamfQuery) async throws -> JamfDeviceRecord {
-        switch self {
-        case .pro(let client): try await client.lookup(query)
-        case .school(let client): try await client.lookup(query)
-        }
-    }
-
-    func updateAssetTag(_ assetTag: String, record: JamfDeviceRecord) async throws {
-        switch self {
-        case .pro(let client): try await client.updateAssetTag(assetTag, kind: record.kind, jamfID: record.jamfID)
-        case .school(let client): try await client.updateAssetTag(assetTag, udid: record.jamfID)
-        }
-    }
-
-    func testConnection() async throws {
-        switch self {
-        case .pro(let client): try await client.testConnection()
-        case .school(let client): try await client.testConnection()
-        }
-    }
-}
-
 /// Owns the active Jamf connection's API client and per-device lookup
 /// results. The saved connections are in `connections`.
 @MainActor
@@ -119,7 +81,7 @@ final class JamfStore {
             url = record.serverURL
         case .jamfPlatform:
             credentials = .platform(
-                region: PlatformRegion(rawValue: record.region.rawValue) ?? .eu,
+                region: record.region,
                 clientID: record.clientID.trimmingCharacters(in: .whitespacesAndNewlines),
                 clientSecret: secret,
                 environmentID: record.environmentID.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -178,12 +140,14 @@ final class JamfStore {
         configurationGeneration += 1
     }
 
-    private func activeClient() -> JamfService? {
+    /// The client of the connection in use; nil when there is none.
+    /// - Throws: why JTKit can't make one, e.g. an address that isn't HTTPS.
+    private func activeClient() throws -> JamfService? {
         let record = connections.activeConnection
         // A renamed connection gets a new client, so the log shows the new name.
         if let client, clientConnectionName == record?.name { return client }
         guard let configuration, let record else { return nil }
-        let newClient = JamfService(configuration: configuration, recorder: recorder(for: record))
+        let newClient = try JamfService(configuration: configuration, recorder: recorder(for: record))
         client = newClient
         clientConnectionName = record.name
         return newClient
@@ -220,7 +184,14 @@ final class JamfStore {
     }
 
     private func performLookup(_ query: JamfQuery) {
-        guard let client = activeClient() else { return }
+        let client: JamfService
+        do {
+            guard let active = try activeClient() else { return }
+            client = active
+        } catch {
+            lookupStates[query] = .failed(error.localizedDescription)
+            return
+        }
         guard !inFlight.contains(query) else { return }
         inFlight.insert(query)
         lookupStates[query] = .loading
@@ -229,16 +200,15 @@ final class JamfStore {
         Task {
             let state: JamfLookupState
             do {
-                state = .found(try await client.lookup(query))
-            } catch JamfError.noMatch {
-                state = .noMatch
-            } catch JamfError.multipleMatches(let count) {
-                state = .multipleMatches(count)
-            } catch let error as JamfError {
-                // Can hold the server's answer: private in the system log.
-                logger.error("Jamf lookup failed: \(error.localizedDescription, privacy: .private)")
-                state = .failed(error.localizedDescription)
+                switch try await client.lookup(query) {
+                case .found(let record): state = .found(record)
+                case .noMatch: state = .noMatch
+                case .multipleMatches(let count): state = .multipleMatches(count)
+                }
             } catch {
+                // JTKit's message (status, Jamf's error, Trace ID, hints). It
+                // can hold the server's answer: private in the system log.
+                logger.error("Jamf lookup failed: \(error.localizedDescription, privacy: .private)")
                 state = .failed(error.localizedDescription)
             }
             inFlight.remove(query)
@@ -252,11 +222,17 @@ final class JamfStore {
         }
     }
 
-    /// Writes a new asset tag to Jamf Pro and updates the cached record.
-    /// Returns nil on success, or the error to show.
-    func saveAssetTag(_ tag: String, record: JamfDeviceRecord, for device: USBDevice) async -> JamfError? {
-        guard let query = device.jamfQuery, let client = activeClient() else {
-            return .authenticationFailed("\(productName) is not configured")
+    /// Writes a new asset tag to Jamf Pro or Jamf School and updates the
+    /// cached record. Returns nil on success, or the message to show.
+    func saveAssetTag(_ tag: String, record: JamfDeviceRecord, for device: USBDevice) async -> String? {
+        let active: JamfService?
+        do {
+            active = try activeClient()
+        } catch {
+            return error.localizedDescription
+        }
+        guard let query = device.jamfQuery, let client = active else {
+            return "\(productName) is not configured."
         }
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
@@ -265,10 +241,8 @@ final class JamfStore {
             updated.assetTag = trimmed.isEmpty ? nil : trimmed
             lookupStates[query] = .found(updated)
             return nil
-        } catch let error as JamfError {
-            return error
         } catch {
-            return .networkFailure(error.localizedDescription)
+            return error.localizedDescription
         }
     }
 
@@ -282,15 +256,9 @@ final class JamfStore {
             case .jamfSchool: "Fill in the Jamf School URL, Network ID and API key first"
             default: "Fill in the server URL and credentials first"
             }
-            throw JamfError.authenticationFailed(missing)
+            throw JamfSetupError(message: missing)
         }
-        do {
-            try await JamfService(configuration: configuration, recorder: recorder(for: record)).testConnection()
-        } catch let error as JamfError {
-            throw error
-        } catch {
-            throw JamfError.networkFailure(error.localizedDescription)
-        }
+        try await JamfService(configuration: configuration, recorder: recorder(for: record)).testConnection()
         return "Authenticated successfully"
     }
 }

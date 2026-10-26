@@ -327,14 +327,14 @@ final class ConnectionConversionTests {
             return try #require(JamfStore.configuration(for: record, secret: store.secret(for: record.connection) ?? ""))
         }
         let platform = try configuration(.platform)
-        #expect(platform.apiBaseURL.absoluteString == "https://us.api.jamfcloud.com/pro")
+        #expect(platform.connection?.jamfBaseURL?.absoluteString == "https://us.api.jamfcloud.com")
         #expect(platform.webBaseURL?.absoluteString == "https://yourorg.jamfcloud.com")
         #expect(platform.credentials == .platform(region: .us, clientID: "platform-client",
                                                    clientSecret: "platform-secret",
                                                    environmentID: "E77C1408-10C8-4007-B177-ABC9157FBCAA"))
         #expect(try configuration(.basic).credentials == .basic(username: "admin", password: "password"))
-        #expect(try configuration(.clientCredentials).tokenURL?.absoluteString
-                == "https://yourorg.jamfcloud.com/api/oauth/token")
+        #expect(try configuration(.clientCredentials).connection?.jamfBaseURL?.absoluteString
+                == "https://yourorg.jamfcloud.com")
         #expect(try configuration(.jamfSchool).isJamfSchool)
     }
 

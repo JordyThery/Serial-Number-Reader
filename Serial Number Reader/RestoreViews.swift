@@ -186,7 +186,7 @@ struct RestoreSheet: View {
     private func startRestore() {
         guard let ecid = device.configuratorECID else { return }
         restore.start(.restore(ipsw: source == .ipsw ? ipswURL : nil),
-                      ecid: ecid, deviceName: device.modelDisplayName)
+                      ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber)
         dismiss()
     }
 }
@@ -219,7 +219,8 @@ struct ReviveSheet: View {
                     .keyboardShortcut(.defaultAction)
                 Button("Revive") {
                     guard let ecid = device.configuratorECID else { return }
-                    restore.start(.revive, ecid: ecid, deviceName: device.modelDisplayName)
+                    restore.start(.revive, ecid: ecid, deviceName: device.modelDisplayName,
+                                  serialNumber: device.serialNumber)
                     dismiss()
                 }
                 .disabled(device.configuratorECID == nil || restore.isRunning)

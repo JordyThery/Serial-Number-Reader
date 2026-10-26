@@ -115,7 +115,7 @@ struct DeviceDetailView: View {
                 }
 
                 Button {
-                    actions.restart()
+                    actions.restart(device: device)
                 } label: {
                     Label("Restart", systemImage: "restart")
                 }
@@ -126,7 +126,7 @@ struct DeviceDetailView: View {
 
                 if device.mode != .dfu {
                     Button {
-                        actions.enterDFU()
+                        actions.enterDFU(device: device)
                     } label: {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
@@ -517,7 +517,7 @@ struct AssetTagRow: View {
         errorMessage = nil
         Task {
             if let error = await jamf.saveAssetTag(draft, record: record, for: device) {
-                errorMessage = error.localizedDescription
+                errorMessage = error
             } else {
                 isEditing = false
             }

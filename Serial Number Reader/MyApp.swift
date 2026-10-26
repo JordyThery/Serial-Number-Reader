@@ -18,7 +18,7 @@ struct MyApp {
 /// Owns the restore controller so quitting can be confirmed while a Restore
 /// or Revive runs.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let restore = RestoreController()
+    let restore = RestoreController(activityLog: .app)
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard restore.isRunning else { return .terminateNow }
@@ -36,8 +36,9 @@ struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor()
     @State private var jamf = JamfStore(connections: JamfConnectionStore.isUnitTestHost
-                                        ? .forUnitTestHost() : JamfConnectionStore())
-    @State private var actions = DeviceActionController()
+                                        ? .forUnitTestHost() : JamfConnectionStore(),
+                                        activityLog: .app)
+    @State private var actions = DeviceActionController(activityLog: .app)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -82,7 +83,7 @@ struct SerialNumberReaderApp: App {
         // JTKit's shared activity log (Window › Activity Log, ⇧⌘L).
         ActivityLogWindow(
             log: jamf.activityLog,
-            emptyDescription: "Sign-ins, Jamf lookups, asset tag changes, connection tests and retries appear here as they happen."
+            emptyDescription: "Sign-ins, Jamf lookups, asset tag changes, connection tests, retries and USB actions appear here as they happen."
         )
     }
 
@@ -90,4 +91,10 @@ struct SerialNumberReaderApp: App {
     private var sessionRows: [SessionExport.Row] {
         monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0)) }
     }
+}
+
+extension ActivityLog {
+    /// The app's one activity log: Jamf requests, and the USB actions and
+    /// restores (Window › Activity Log).
+    static let app = ActivityLog()
 }

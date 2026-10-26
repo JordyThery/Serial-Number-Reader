@@ -3,26 +3,7 @@ import JTKit
 
 // MARK: - Configuration & errors
 
-/// A Jamf Platform API gateway region. Tokens are region-locked, so the
-/// token and every request must go to the same regional host.
-nonisolated enum PlatformRegion: String, CaseIterable, Identifiable, Sendable {
-    case eu, us, apac
-
-    var id: Self { self }
-    var label: String {
-        switch self {
-        case .eu: "Europe (EU)"
-        case .us: "United States (US)"
-        case .apac: "Asia Pacific (APAC)"
-        }
-    }
-
-    var gatewayURL: URL {
-        URL(string: "https://\(rawValue).api.jamfcloud.com")!
-    }
-}
-
-/// How to authenticate against Jamf Pro.
+/// How to authenticate against Jamf Pro or Jamf School.
 nonisolated enum JamfCredentials: Sendable, Equatable {
     /// OAuth client credentials (Jamf Pro API roles and clients).
     case clientCredentials(clientID: String, clientSecret: String)
@@ -30,18 +11,17 @@ nonisolated enum JamfCredentials: Sendable, Equatable {
     case basic(username: String, password: String)
     /// Jamf Platform API integration from Jamf Account, scoped to a platform
     /// environment (the scope Jamf recommends; tenant scope is not offered).
-    case platform(region: PlatformRegion, clientID: String, clientSecret: String, environmentID: String)
+    case platform(region: JamfRegion, clientID: String, clientSecret: String, environmentID: String)
     /// Jamf School: Network ID and API key (HTTP Basic).
     case jamfSchool(networkID: String, apiKey: String)
 }
 
+/// A complete, valid connection: what JTKit's clients are made from, and the
+/// web address for "Open in Jamf Pro/School" links.
 nonisolated struct JamfConfiguration: Sendable, Equatable {
-    /// Base for API paths such as `v2/mobile-devices/detail`:
-    /// `https://server/api` for Jamf Pro, `https://{region}.api.jamfcloud.com/pro`
-    /// for the Platform API gateway.
-    let apiBaseURL: URL
-    /// nil for Jamf School, which authenticates every request directly.
-    let tokenURL: URL?
+    /// The Jamf Pro or Jamf School server; nil for the Platform API, which
+    /// goes to the region's gateway.
+    let serverURL: URL?
     /// The web interface, for "Open in Jamf Pro/School" links. Optional for
     /// the Platform API, which doesn't expose the instance's address.
     let webBaseURL: URL?
@@ -60,13 +40,32 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
     /// The product name shown in the UI.
     var productName: String { isJamfSchool ? "Jamf School" : "Jamf Pro" }
 
-    /// Request headers that identify the context; the gateway serves every
-    /// customer in a region from one host.
-    var contextHeaders: [String: String] {
-        if case .platform(_, _, _, let environmentID) = credentials {
-            return ["X-Environment-Id": environmentID]
+    /// The secret the sign-in uses.
+    var secret: String {
+        switch credentials {
+        case .clientCredentials(_, let secret), .basic(_, let secret), .platform(_, _, let secret, _),
+             .jamfSchool(_, let secret):
+            secret
         }
-        return [:]
+    }
+
+    /// The JTKit connection JTKit's Jamf Pro and Platform API client is made
+    /// from (its address added to `https://` when typed without it). Nil for
+    /// Jamf School.
+    var connection: Connection? {
+        switch credentials {
+        case .clientCredentials(let clientID, _):
+            Connection(name: "", service: .jamfPro, signIn: .apiClient,
+                       serverURL: serverURL?.absoluteString ?? "", clientID: clientID)
+        case .basic(let username, _):
+            Connection(name: "", service: .jamfPro, signIn: .usernamePassword,
+                       serverURL: serverURL?.absoluteString ?? "", username: username)
+        case .platform(let region, let clientID, _, let environmentID):
+            Connection(name: "", service: .jamfPlatform, signIn: .apiClient, region: region,
+                       environmentID: environmentID, clientID: clientID)
+        case .jamfSchool:
+            nil
+        }
     }
 
     /// Builds a configuration from raw settings values, or nil when incomplete
@@ -77,35 +76,18 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
         switch credentials {
         case .clientCredentials(let id, let secret):
             guard !id.isEmpty, !secret.isEmpty, let serverURL else { return nil }
-            return JamfConfiguration(
-                apiBaseURL: serverURL.appending(path: "api"),
-                tokenURL: serverURL.appending(path: "api/oauth/token"),
-                webBaseURL: serverURL, credentials: credentials)
+            return JamfConfiguration(serverURL: serverURL, webBaseURL: serverURL, credentials: credentials)
         case .basic(let username, let password):
             guard !username.isEmpty, !password.isEmpty, let serverURL else { return nil }
-            return JamfConfiguration(
-                apiBaseURL: serverURL.appending(path: "api"),
-                tokenURL: serverURL.appending(path: "api/v1/auth/token"),
-                webBaseURL: serverURL, credentials: credentials)
-        case .platform(let region, let id, let secret, let environmentID):
+            return JamfConfiguration(serverURL: serverURL, webBaseURL: serverURL, credentials: credentials)
+        case .platform(_, let id, let secret, let environmentID):
             guard !id.isEmpty, !secret.isEmpty, isValidEnvironmentID(environmentID) else { return nil }
-            return JamfConfiguration(
-                apiBaseURL: region.gatewayURL.appending(path: "pro"),
-                tokenURL: region.gatewayURL.appending(path: "auth/token"),
-                webBaseURL: serverURL, credentials: credentials)
+            return JamfConfiguration(serverURL: nil, webBaseURL: serverURL, credentials: credentials)
         case .jamfSchool(let networkID, let apiKey):
-            guard !networkID.isEmpty, !apiKey.isEmpty, var schoolURL = serverURL else { return nil }
             // Jamf School's documentation shows the API address with /api;
-            // accept it, since JamfSchoolClient appends "api/…" itself.
-            if schoolURL.path().lowercased().hasSuffix("/api") {
-                schoolURL = schoolURL.deletingLastPathComponent()
-                if schoolURL.absoluteString.hasSuffix("/") {
-                    schoolURL = URL(string: String(schoolURL.absoluteString.dropLast())) ?? schoolURL
-                }
-            }
-            return JamfConfiguration(
-                apiBaseURL: schoolURL, tokenURL: nil,
-                webBaseURL: schoolURL, credentials: credentials)
+            // JTKit accepts it and drops it.
+            guard !networkID.isEmpty, !apiKey.isEmpty, let schoolURL = JamfSchool.baseURL(urlString) else { return nil }
+            return JamfConfiguration(serverURL: schoolURL, webBaseURL: schoolURL, credentials: credentials)
         }
     }
 
@@ -126,26 +108,11 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
     }
 }
 
-nonisolated enum JamfError: Error, LocalizedError, Equatable {
-    case authenticationFailed(String)
-    case httpError(Int, String)
-    case networkFailure(String)
-    case decodingFailure(String)
-    case invalidIdentifier
-    case noMatch
-    case multipleMatches(Int)
+/// A problem found before anything is sent, e.g. settings not filled in.
+nonisolated struct JamfSetupError: Error, LocalizedError, Equatable {
+    let message: String
 
-    var errorDescription: String? {
-        switch self {
-        case .authenticationFailed(let detail): "Jamf authentication failed: \(detail)"
-        case .httpError(let code, let detail): "Jamf returned HTTP \(code): \(detail)"
-        case .networkFailure(let detail): "Network error: \(detail)"
-        case .decodingFailure(let detail): "Unexpected Jamf response: \(detail)"
-        case .invalidIdentifier: "The device identifier contains unexpected characters"
-        case .noMatch: "No matching device found in Jamf"
-        case .multipleMatches(let count): "\(count) devices in Jamf match — record is ambiguous"
-        }
-    }
+    var errorDescription: String? { message }
 }
 
 // MARK: - Unified device record
@@ -186,346 +153,162 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
     }
 }
 
-// MARK: - Client
-
-/// Jamf Pro API client, reached directly or through the Jamf Platform API
-/// gateway (same endpoints and schemas). Signing in, the token, retries and
-/// the activity log are JTKit's (`JamfTokenProvider`, `HTTPClient`); this
-/// client adds the lookups and the app's own error messages.
-actor JamfClient {
-
-    private let config: JamfConfiguration
-    private let tokens: JamfTokenProvider?
-    private let http: HTTPClient
-
-    /// - Parameter recorder: sends and records each request (activity log).
-    init(config: JamfConfiguration, recorder: RequestRecorder) {
-        self.config = config
-        let signIn: (method: JamfTokenProvider.Method, secret: String)?
-        switch config.credentials {
-        case .clientCredentials(let clientID, let secret), .platform(_, let clientID, let secret, _):
-            // The Platform API uses the same OAuth client-credentials
-            // exchange, against the regional gateway.
-            signIn = (.apiClient(clientID: clientID), secret)
-        case .basic(let username, let password):
-            signIn = (.usernamePassword(username: username), password)
-        case .jamfSchool:
-            // Served by JamfSchoolClient, which needs no tokens.
-            signIn = nil
-        }
-        if let signIn, let tokenURL = config.tokenURL {
-            let secret = signIn.secret
-            tokens = JamfTokenProvider(tokenURL: tokenURL, method: signIn.method,
-                                       secret: { secret }, recorder: recorder)
-        } else {
-            tokens = nil
-        }
-        http = HTTPClient(baseURL: config.apiBaseURL, tokens: tokens, recorder: recorder,
-                          headers: config.contextHeaders)
+nonisolated extension JamfDeviceRecord {
+    /// From JTKit's mobile device record; nil without a Jamf Pro ID.
+    init?(_ device: JamfPro.MobileDevice) {
+        guard let id = device.id else { return nil }
+        self.init(kind: .mobileDevice, jamfID: id, name: device.general?.displayName,
+                  assetTag: device.general?.assetTag, serialNumber: device.serialNumber, udid: device.udid,
+                  model: device.hardware?.model, modelIdentifier: device.hardware?.modelIdentifier,
+                  osVersion: device.general?.osVersion, managed: device.general?.managed,
+                  username: device.userAndLocation?.username, realName: device.userAndLocation?.realName,
+                  email: device.userAndLocation?.email, lastInventoryDate: device.general?.lastInventoryUpdateDate)
     }
 
-    // MARK: Public lookups
+    /// From JTKit's computer record; nil without a Jamf Pro ID. The date is
+    /// the last inventory report, or else the last check-in.
+    init?(_ computer: JamfPro.Computer) {
+        guard let id = computer.id else { return nil }
+        self.init(kind: .computer, jamfID: id, name: computer.general?.name, assetTag: computer.general?.assetTag,
+                  serialNumber: computer.serialNumber, udid: computer.udid, model: computer.hardware?.model,
+                  modelIdentifier: computer.hardware?.modelIdentifier, osVersion: computer.operatingSystem?.version,
+                  managed: computer.general?.managed, username: computer.userAndLocation?.username,
+                  realName: computer.userAndLocation?.realName, email: computer.userAndLocation?.email,
+                  lastInventoryDate: computer.general?.reportDate ?? computer.general?.lastCheckIn)
+    }
+
+    /// From JTKit's Jamf School device.
+    init(_ device: JamfSchool.Device) {
+        self.init(kind: .schoolDevice, jamfID: device.udid, name: device.name, assetTag: device.assetTag,
+                  serialNumber: device.serialNumber, udid: device.udid, model: device.modelName,
+                  modelIdentifier: device.modelIdentifier, osVersion: device.osVersion, managed: device.isManaged,
+                  username: device.ownerUsername, realName: device.ownerName, email: device.ownerEmail,
+                  lastInventoryDate: device.lastCheckIn)
+    }
+}
+
+/// What a lookup found.
+nonisolated enum JamfLookupResult: Sendable, Equatable {
+    case found(JamfDeviceRecord)
+    case noMatch
+    case multipleMatches(Int)
+}
+
+// MARK: - Client
+
+/// The configured backend behind the operations the app needs: Jamf Pro
+/// (directly or through the Platform API gateway) or Jamf School, both on
+/// JTKit (sign-in, retries, the activity log, the error format), with the
+/// app's own hints on top.
+nonisolated enum JamfService: Sendable {
+    case pro(JamfPlatform.Client, isPlatform: Bool)
+    case school(JamfSchool.Client)
+
+    /// - Parameter recorder: sends and records each request (activity log).
+    init(configuration: JamfConfiguration, recorder: RequestRecorder) throws {
+        if case .jamfSchool(let networkID, let apiKey) = configuration.credentials {
+            self = .school(try JamfSchool.Client(address: configuration.serverURL?.absoluteString ?? "",
+                                                 networkID: networkID, apiKey: apiKey, recorder: recorder,
+                                                 hints: Self.schoolHints))
+        } else if let connection = configuration.connection {
+            let secret = configuration.secret
+            self = .pro(try JamfPlatform.Client(connection: connection, secret: { secret }, recorder: recorder,
+                                                hints: Self.proHints),
+                        isPlatform: configuration.isPlatform)
+        } else {
+            throw JamfSetupError(message: "The connection is incomplete.")
+        }
+    }
 
     /// Looks up a device. Serial queries try mobile devices first, then
     /// computers (recovery-mode Macs report a serial too). UDID queries are
-    /// mobile-device only.
-    func lookup(_ query: JamfQuery) async throws -> JamfDeviceRecord {
-        switch query {
-        case .udid(let udid):
-            let safe = try Self.validatedIdentifier(udid)
-            return try await lookupMobileDevice(filter: "udid==\"\(safe)\"")
-        case .serialNumber(let serial):
-            let safe = try Self.validatedIdentifier(serial)
-            do {
-                return try await lookupMobileDevice(filter: "serialNumber==\"\(safe)\"")
-            } catch JamfError.noMatch {
-                return try await lookupComputer(serial: safe)
+    /// mobile-device only. Jamf School records are read from the
+    /// single-device endpoint, the only one with the instance's time zone.
+    func lookup(_ query: JamfQuery) async throws -> JamfLookupResult {
+        switch self {
+        case .pro(let client, _):
+            switch query {
+            case .udid(let udid):
+                return try Self.result(await client.mobileDevice(udid: udid), JamfDeviceRecord.init)
+            case .serialNumber(let serial):
+                let mobile = try await client.mobileDevice(serial: serial)
+                if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
+                return try Self.result(await client.computer(serial: serial), JamfDeviceRecord.init)
             }
-        }
-    }
-
-    /// Serials and UDIDs are alphanumeric plus hyphens. The values originate
-    /// from USB descriptors — device-controlled data — so anything else is
-    /// rejected rather than interpolated into an RSQL filter.
-    static func validatedIdentifier(_ value: String) throws -> String {
-        guard !value.isEmpty, value.count <= 64,
-              value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" })
-        else { throw JamfError.invalidIdentifier }
-        return value
-    }
-
-    /// Validates the configuration; used by Settings. For the Platform API a
-    /// token alone doesn't prove the environment ID is right, so it also makes
-    /// one cheap request through the environment — an inventory read, which
-    /// the required devices:read permission covers.
-    func testConnection() async throws {
-        guard let tokens else {
-            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
-        }
-        await tokens.forgetToken()
-        do {
-            _ = try await tokens.token()
-        } catch {
-            throw mapped(error)
-        }
-        if config.isPlatform {
-            _ = try await authorizedGET(path: "v1/computers-inventory", queryItems: [
-                URLQueryItem(name: "section", value: "GENERAL"),
-                URLQueryItem(name: "page", value: "0"),
-                URLQueryItem(name: "page-size", value: "1"),
-            ])
-        }
-    }
-
-    // MARK: Requests
-
-    private func authorizedGET(path: String, queryItems: [URLQueryItem]) async throws -> Data {
-        try await send(HTTPRequest(path: path, query: queryItems))
-    }
-
-    private func send(_ request: HTTPRequest) async throws -> Data {
-        guard tokens != nil else {
-            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
-        }
-        do {
-            return try await http.send(request).data
-        } catch {
-            throw mapped(error)
-        }
-    }
-
-    /// JTKit's errors as the app's, with its hints for the usual mistakes.
-    /// Server answers are redacted (`Redaction`) before they are shown.
-    private func mapped(_ error: any Error) -> any Error {
-        switch error {
-        case is CancellationError, is JamfError:
-            return error
-        case HTTPError.status(let response, _, _, duringSignIn: true):
-            if config.isPlatform, (400...401).contains(response.status) {
-                return JamfError.authenticationFailed(
-                    "HTTP \(response.status) — check the client ID, secret and region. Jamf Account integrations expire after six months.")
+        case .school(let client):
+            let udid: String
+            switch query {
+            case .udid(let value):
+                udid = value
+            case .serialNumber(let serial):
+                switch try await client.device(serial: serial) {
+                case .none: return .noMatch
+                case .several(let count): return .multipleMatches(count)
+                case .one(let device): udid = device.udid
+                }
             }
-            return JamfError.authenticationFailed("HTTP \(response.status) \(Self.detail(of: response))")
-        case HTTPError.status(let response, _, _, duringSignIn: false):
-            switch response.status {
-            case 401:
-                return JamfError.authenticationFailed("HTTP 401 — check the credentials and their Jamf Pro privileges")
-            case 400 where config.isPlatform
-                && String(decoding: response.data, as: UTF8.self).contains("INVALID_REQUEST_CONTEXT_ID"):
-                return JamfError.httpError(400, "the environment ID doesn't belong to this integration — copy it from the integration's details in Jamf Account")
-            case 403 where config.isPlatform:
-                return JamfError.httpError(403, "check that the integration is scoped to this platform environment and has the devices:read permission (devices:update to edit asset tags)")
-            case 403:
-                return JamfError.httpError(403, "the account lacks the privilege for this action")
-            default:
-                return JamfError.httpError(response.status, Self.detail(of: response))
-            }
-        case HTTPError.transport(_, _, _, let message):
-            return JamfError.networkFailure(message)
-        case HTTPError.decoding(let message):
-            return JamfError.decodingFailure(message)
+            guard let device = try await client.device(udid: udid) else { return .noMatch }
+            return .found(JamfDeviceRecord(device))
+        }
+    }
+
+    func updateAssetTag(_ assetTag: String, record: JamfDeviceRecord) async throws {
+        switch (self, record.kind) {
+        case (.pro(let client, _), .computer):
+            try await client.setAssetTag(assetTag, computerID: record.jamfID)
+        case (.pro(let client, _), .mobileDevice):
+            try await client.setAssetTag(assetTag, mobileDeviceID: record.jamfID)
+        case (.school(let client), .schoolDevice):
+            try await client.setAssetTag(assetTag, udid: record.jamfID)
         default:
-            return JamfError.networkFailure(Redaction.text(error.localizedDescription))
+            throw JamfSetupError(message: "This record belongs to another connection. Look the device up again.")
         }
     }
 
-    /// The start of the server's answer on one line, redacted, at most 300 characters.
-    static func detail(of response: HTTPResponse) -> String {
-        guard let body = Redaction.body(response.data, contentType: response.header("Content-Type")) else { return "" }
-        let flat = body.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .joined(separator: " ")
-        return flat.count > 300 ? String(flat.prefix(300)) + "…" : flat
-    }
-
-    // MARK: Asset tag updates
-
-    /// Writes a new asset tag to the Jamf Pro record. Requires the
-    /// "Update Mobile Devices" / "Update Computers" privilege, or
-    /// `devices:update` on the Platform API.
-    func updateAssetTag(_ assetTag: String, kind: JamfDeviceRecord.Kind, jamfID: String) async throws {
-        let path: String
-        let body: [String: Any]
-        switch kind {
-        case .mobileDevice:
-            path = "v2/mobile-devices/\(jamfID)"
-            body = ["assetTag": assetTag]
-        case .computer:
-            path = "v1/computers-inventory-detail/\(jamfID)"
-            body = ["general": ["assetTag": assetTag]]
-        case .schoolDevice:
-            throw JamfError.httpError(400, "Jamf School records are updated by the Jamf School client")
-        }
-        let data = try JSONSerialization.data(withJSONObject: body)
-        // Setting the same tag twice gives the same result, so a server error
-        // or a network drop may be retried.
-        _ = try await send(HTTPRequest(method: "PATCH", path: path, body: data, safeToRepeat: true))
-    }
-
-    // MARK: Mobile devices (GET /api/v2/mobile-devices/detail)
-
-    private struct MobileDetailResponse: Decodable {
-        struct Result: Decodable {
-            struct General: Decodable {
-                let displayName: String?
-                let assetTag: String?
-                let udid: String?
-                let osVersion: String?
-                let managed: Bool?
-                let lastInventoryUpdateDate: String?
+    /// Signs in afresh. For the Platform API a token alone doesn't prove the
+    /// environment ID is right, so it also makes one cheap request through the
+    /// environment: an inventory read, which devices:read covers.
+    func testConnection() async throws {
+        switch self {
+        case .pro(let client, let isPlatform):
+            try await client.signIn()
+            if isPlatform {
+                _ = try await client.json("pro/v4/computers-inventory", query: [
+                    URLQueryItem(name: "section", value: "GENERAL"),
+                    URLQueryItem(name: "page", value: "0"),
+                    URLQueryItem(name: "page-size", value: "1"),
+                ], privilege: .readComputers)
             }
-            struct Hardware: Decodable {
-                let serialNumber: String?
-                let udid: String?
-                let model: String?
-                let modelIdentifier: String?
-            }
-            struct UserAndLocation: Decodable {
-                let username: String?
-                let realName: String?
-                let emailAddress: String?
-            }
-            let mobileDeviceId: String?
-            let udid: String?
-            let general: General?
-            let hardware: Hardware?
-            let userAndLocation: UserAndLocation?
+        case .school(let client):
+            try await client.testConnection()
         }
-        let totalCount: Int?
-        let results: [Result]
     }
 
-    private func lookupMobileDevice(filter: String) async throws -> JamfDeviceRecord {
-        let data = try await authorizedGET(
-            path: "v2/mobile-devices/detail",
-            queryItems: [
-                URLQueryItem(name: "section", value: "GENERAL"),
-                URLQueryItem(name: "section", value: "HARDWARE"),
-                URLQueryItem(name: "section", value: "USER_AND_LOCATION"),
-                URLQueryItem(name: "page", value: "0"),
-                URLQueryItem(name: "page-size", value: "10"),
-                URLQueryItem(name: "filter", value: filter),
-            ]
-        )
-        let decoded: MobileDetailResponse
-        do {
-            decoded = try JSONDecoder().decode(MobileDetailResponse.self, from: data)
-        } catch {
-            throw JamfError.decodingFailure("mobile-devices detail: \(error.localizedDescription)")
+    private static func result<Record: Sendable & Hashable>(
+        _ match: JamfPro.Match<Record>, _ convert: (Record) -> JamfDeviceRecord?
+    ) throws -> JamfLookupResult {
+        switch match {
+        case .none:
+            return .noMatch
+        case .several(let count):
+            return .multipleMatches(count)
+        case .one(let record):
+            guard let converted = convert(record) else {
+                throw JamfPlatformError(.invalidResponse("The Jamf Pro record has no ID."))
+            }
+            return .found(converted)
         }
-
-        guard let result = decoded.results.first else { throw JamfError.noMatch }
-        let count = decoded.totalCount ?? decoded.results.count
-        guard count == 1 else { throw JamfError.multipleMatches(count) }
-        guard let id = result.mobileDeviceId else {
-            throw JamfError.decodingFailure("mobile device record has no ID")
-        }
-
-        return JamfDeviceRecord(
-            kind: .mobileDevice,
-            jamfID: id,
-            name: result.general?.displayName,
-            assetTag: result.general?.assetTag,
-            serialNumber: result.hardware?.serialNumber,
-            udid: result.udid ?? result.general?.udid ?? result.hardware?.udid,
-            model: result.hardware?.model,
-            modelIdentifier: result.hardware?.modelIdentifier,
-            osVersion: result.general?.osVersion,
-            managed: result.general?.managed,
-            username: result.userAndLocation?.username,
-            realName: result.userAndLocation?.realName,
-            email: result.userAndLocation?.emailAddress,
-            lastInventoryDate: Self.parseDate(result.general?.lastInventoryUpdateDate)
-        )
     }
 
-    // MARK: Computers (GET /api/v1/computers-inventory)
-
-    private struct ComputerInventoryResponse: Decodable {
-        struct Result: Decodable {
-            struct General: Decodable {
-                struct RemoteManagement: Decodable { let managed: Bool? }
-                let name: String?
-                let assetTag: String?
-                let lastContactTime: String?
-                let reportDate: String?
-                let remoteManagement: RemoteManagement?
-            }
-            struct Hardware: Decodable {
-                let serialNumber: String?
-                let model: String?
-                let modelIdentifier: String?
-            }
-            struct OperatingSystem: Decodable { let version: String? }
-            struct UserAndLocation: Decodable {
-                let username: String?
-                let realname: String?
-                let email: String?
-            }
-            let id: String?
-            let udid: String?
-            let general: General?
-            let hardware: Hardware?
-            let operatingSystem: OperatingSystem?
-            let userAndLocation: UserAndLocation?
-        }
-        let totalCount: Int?
-        let results: [Result]
+    /// The app's hints on top of JTKit's: which Platform API permissions it needs.
+    @Sendable private static func proHints(_ error: JamfPlatformError) -> [String] {
+        guard error.status == 403, error.server == .platformAPI else { return [] }
+        return ["Serial Number Reader needs the devices:read permission, and devices:update to edit asset tags."]
     }
 
-    private func lookupComputer(serial: String) async throws -> JamfDeviceRecord {
-        let data = try await authorizedGET(
-            path: "v1/computers-inventory",
-            queryItems: [
-                URLQueryItem(name: "section", value: "GENERAL"),
-                URLQueryItem(name: "section", value: "HARDWARE"),
-                URLQueryItem(name: "section", value: "OPERATING_SYSTEM"),
-                URLQueryItem(name: "section", value: "USER_AND_LOCATION"),
-                URLQueryItem(name: "page", value: "0"),
-                URLQueryItem(name: "page-size", value: "10"),
-                URLQueryItem(name: "filter", value: "hardware.serialNumber==\"\(serial)\""),
-            ]
-        )
-        let decoded: ComputerInventoryResponse
-        do {
-            decoded = try JSONDecoder().decode(ComputerInventoryResponse.self, from: data)
-        } catch {
-            throw JamfError.decodingFailure("computers-inventory: \(error.localizedDescription)")
-        }
-
-        guard let result = decoded.results.first else { throw JamfError.noMatch }
-        let count = decoded.totalCount ?? decoded.results.count
-        guard count == 1 else { throw JamfError.multipleMatches(count) }
-        guard let id = result.id else {
-            throw JamfError.decodingFailure("computer record has no ID")
-        }
-
-        return JamfDeviceRecord(
-            kind: .computer,
-            jamfID: id,
-            name: result.general?.name,
-            assetTag: result.general?.assetTag,
-            serialNumber: result.hardware?.serialNumber,
-            udid: result.udid,
-            model: result.hardware?.model,
-            modelIdentifier: result.hardware?.modelIdentifier,
-            osVersion: result.operatingSystem?.version,
-            managed: result.general?.remoteManagement?.managed,
-            username: result.userAndLocation?.username,
-            realName: result.userAndLocation?.realname,
-            email: result.userAndLocation?.email,
-            lastInventoryDate: Self.parseDate(result.general?.reportDate ?? result.general?.lastContactTime)
-        )
-    }
-
-    // MARK: Helpers
-
-    private static func parseDate(_ string: String?) -> Date? {
-        guard let string else { return nil }
-        let withFractional = ISO8601DateFormatter()
-        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFractional.date(from: string) { return date }
-        let plain = ISO8601DateFormatter()
-        return plain.date(from: string)
+    /// … and what a Jamf School API key must be allowed to do.
+    @Sendable private static func schoolHints(_ error: JamfSchoolError) -> [String] {
+        guard error.status == 401 || error.status == 403 else { return [] }
+        return ["Serial Number Reader needs the API key to read devices, and to update their details for asset tags."]
     }
 }

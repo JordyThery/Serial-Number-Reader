@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import os
 
 /// Runs the device power/mode actions shown in the detail pane:
@@ -17,6 +18,10 @@ import os
 ///
 /// A single instance is shared app-wide so only one action runs at a time —
 /// the VDM path operates on ports, not on a specific selected device.
+///
+/// Each action that ran writes an "Action" entry to the activity log, done or
+/// failed, with the device's serial number, UDID and ECID for the masked
+/// export. A cancelled administrator prompt writes nothing: nothing happened.
 @MainActor
 @Observable
 final class DeviceActionController {
@@ -27,6 +32,44 @@ final class DeviceActionController {
         case enterRecovery
         case bootNormal
         case removeTrust
+
+        /// The activity log's words for it, done and failed.
+        func summary(_ device: String, failed: Bool) -> String {
+            switch (self, failed) {
+            case (.reboot, false): "Restarted \(device) over USB"
+            case (.reboot, true): "Couldn’t restart \(device) over USB"
+            case (.dfu, false): "Put \(device) into DFU mode over USB"
+            case (.dfu, true): "Couldn’t put \(device) into DFU mode over USB"
+            case (.enterRecovery, false): "Put \(device) into Recovery mode over USB"
+            case (.enterRecovery, true): "Couldn’t put \(device) into Recovery mode over USB"
+            case (.bootNormal, false): "Booted \(device) out of Recovery mode over USB"
+            case (.bootNormal, true): "Couldn’t boot \(device) out of Recovery mode over USB"
+            case (.removeTrust, false): "Removed the trust between this Mac and \(device)"
+            case (.removeTrust, true): "Couldn’t remove the trust between this Mac and \(device)"
+            }
+        }
+
+        /// What carried it out, as the activity log's service.
+        var service: String { self == .removeTrust ? "Apple Configurator" : "USB" }
+    }
+
+    /// The device an action is for, as the activity log names it.
+    struct Target: Equatable, Sendable {
+        /// e.g. "iPad Air (F9FXK2Q3HGMN)".
+        let name: String
+        /// Serial number, UDID and ECID, masked in the bug-report export.
+        let identifiers: [String]
+
+        init(name: String, identifiers: [String]) {
+            self.name = name
+            self.identifiers = identifiers
+        }
+
+        init(_ device: USBDevice) {
+            let identifiers = [device.serialNumber, device.displayUDID, device.ecid].compactMap { $0 }
+            name = device.serialNumber.map { "\(device.modelDisplayName) (\($0))" } ?? device.modelDisplayName
+            self.identifiers = identifiers.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+        }
     }
 
     /// The action currently running, if any (drives button spinners).
@@ -38,28 +81,36 @@ final class DeviceActionController {
     private(set) var trustRequiredDeviceID: UInt64?
 
     /// What an action's work reports back. Created off the main actor.
-    nonisolated private enum Outcome: Sendable {
+    nonisolated enum Outcome: Sendable, Equatable {
         case done
         case failed(String)
         case trustRequired(deviceID: UInt64)
+        /// The administrator prompt was cancelled: nothing was done.
+        case cancelled
 
         init(errorMessage: String?) {
             self = errorMessage.map(Outcome.failed) ?? .done
         }
     }
 
+    /// Where "Action" entries go; nil records nothing (previews).
+    private let activityLog: ActivityLog?
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "DeviceActions")
+
+    init(activityLog: ActivityLog? = nil) {
+        self.activityLog = activityLog
+    }
 
     // MARK: - Actions
 
     /// Force-restarts the connected device via USB-PD (admin prompt).
-    func restart() {
-        start(.reboot) { Outcome(errorMessage: Self.runPrivilegedVDM("reboot")) }
+    func restart(device: USBDevice) {
+        start(.reboot, for: Target(device)) { Self.runPrivilegedVDM("reboot") }
     }
 
     /// Reboots the connected device into DFU mode via USB-PD (admin prompt).
-    func enterDFU() {
-        start(.dfu) { Outcome(errorMessage: Self.runPrivilegedVDM("dfu")) }
+    func enterDFU(device: USBDevice) {
+        start(.dfu, for: Target(device)) { Self.runPrivilegedVDM("dfu") }
     }
 
     /// Asks a booted device to reboot into Recovery mode via lockdownd —
@@ -70,7 +121,7 @@ final class DeviceActionController {
             return
         }
         let deviceID = device.id
-        start(.enterRecovery) {
+        start(.enterRecovery, for: Target(device)) {
             do {
                 try Usbmux.enterRecovery(udid: udid)
                 return .done
@@ -83,7 +134,7 @@ final class DeviceActionController {
     /// Boots a Recovery-mode device back to normal (auto-boot true + reboot).
     func bootToNormal(device: USBDevice) {
         let entryID = device.id
-        start(.bootNormal) {
+        start(.bootNormal, for: Target(device)) {
             Outcome(errorMessage: RecoveryCommands.send(
                 ["setenv auto-boot true", "saveenv", "reboot"],
                 toRegistryEntryID: entryID
@@ -98,7 +149,7 @@ final class DeviceActionController {
             lastError = "This device's ECID is unknown, so its trust can't be removed here."
             return
         }
-        start(.removeTrust, onSuccess: onSuccess) {
+        start(.removeTrust, for: Target(device), onSuccess: onSuccess) {
             try Configurator.unpair(ecid: ecid)
             return .done
         }
@@ -106,40 +157,56 @@ final class DeviceActionController {
 
     // MARK: - Execution
 
-    /// Runs blocking `work` off the main thread and publishes its outcome.
-    private func start(_ action: Action, onSuccess: (@MainActor () -> Void)? = nil,
-                       work: @escaping @Sendable () throws -> Outcome) {
-        guard runningAction == nil else { return }
+    /// Runs blocking `work` off the main thread, publishes its outcome and
+    /// records it. Waits for the outcome, so tests can check what was recorded.
+    @discardableResult
+    func start(_ action: Action, for target: Target, onSuccess: (@MainActor () -> Void)? = nil,
+               work: @escaping @Sendable () throws -> Outcome) -> Task<Void, Never>? {
+        guard runningAction == nil else { return nil }
         runningAction = action
         lastError = nil
         trustRequiredDeviceID = nil
-        Task {
+        let started = ContinuousClock.now
+        return Task {
             let outcome: Outcome
             do {
                 outcome = try await Task.detached(priority: .userInitiated) { try work() }.value
             } catch {
                 outcome = .failed(error.localizedDescription)
             }
+            let elapsed = started.duration(to: .now)
+            let duration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
             switch outcome {
             case .done:
+                record(action, target, failed: false, note: nil, duration: duration)
                 onSuccess?()
             case .failed(let message):
                 // The message can hold a UDID or the device's reply: private.
                 logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .private)")
+                record(action, target, failed: true, note: message, duration: duration)
                 lastError = message
             case .trustRequired(let deviceID):
+                record(action, target, failed: true, note: "The device doesn’t trust this Mac.", duration: duration)
                 trustRequiredDeviceID = deviceID
+            case .cancelled:
+                break
             }
             runningAction = nil
         }
     }
 
-    /// Returns an error message, or nil for success and for a cancelled
-    /// authorization prompt (cancellation is intentionally silent).
-    private nonisolated static func runPrivilegedVDM(_ action: String) -> String? {
+    private func record(_ action: Action, _ target: Target, failed: Bool, note: String?, duration: TimeInterval) {
+        activityLog?.recordAction(action.summary(target.name, failed: failed), note: note, failed: failed,
+                                  service: action.service, devices: target.identifiers, duration: duration)
+    }
+
+    /// Done, failed with a message, or cancelled at the authorization prompt
+    /// (cancellation is intentionally silent, and not recorded).
+    private nonisolated static func runPrivilegedVDM(_ action: String) -> Outcome {
         switch executeViaAppleScript(action) {
-        case .success, .cancelled: nil
-        case .failure(let message): message
+        case .success: .done
+        case .cancelled: .cancelled
+        case .failure(let message): .failed(message)
         }
     }
 

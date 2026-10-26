@@ -1,10 +1,14 @@
 import Foundation
+import JTKit
 import Observation
 import os
 
 /// Runs one Restore or Revive at a time through Apple Configurator and
 /// publishes its progress. Shared app-wide: the progress banner, the quit
 /// confirmation and the other device actions all consult it.
+///
+/// The start and the end of each job are "Action" entries in the activity
+/// log, with the device's ECID for the masked export.
 @MainActor
 @Observable
 final class RestoreController {
@@ -56,11 +60,26 @@ final class RestoreController {
     }
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Restore")
+    /// Where "Action" entries go; nil records nothing (previews).
+    private let activityLog: ActivityLog?
+    /// Runs the job; Apple Configurator by default, a fake in tests.
+    private let run: @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
+
+    init(activityLog: ActivityLog? = nil,
+         run: @escaping @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
+            = { Configurator.run($0, ecid: $1) }) {
+        self.activityLog = activityLog
+        self.run = run
+    }
 
     /// Starts a Restore or Revive for one device. Ignored while another job
     /// is running.
-    func start(_ operation: Configurator.Operation, ecid: String, deviceName: String) {
-        guard !isRunning else { return }
+    ///
+    /// - Parameter serialNumber: named in the activity log, when known.
+    @discardableResult
+    func start(_ operation: Configurator.Operation, ecid: String, deviceName: String,
+               serialNumber: String? = nil) -> Task<Void, Never>? {
+        guard !isRunning else { return nil }
         let kind: Job.Kind
         var ipswName: String?
         switch operation {
@@ -73,26 +92,42 @@ final class RestoreController {
         job = Job(kind: kind, deviceName: deviceName, ecid: ecid, ipswName: ipswName)
         append("Started \(kind == .restore ? "restore" : "revive") of \(deviceName)"
                + (ipswName.map { " with \($0)" } ?? ""))
+        let named = serialNumber.map { "\(deviceName) (\($0))" } ?? deviceName
+        let devices = [serialNumber, ecid].compactMap { $0 }
+        let verb = kind == .restore ? "restore" : "revive"
+        activityLog?.recordAction("Started to \(verb) \(named) with Apple Configurator",
+                                  note: kind == .restore ? "Firmware: \(ipswName ?? "the latest signed version")." : nil,
+                                  service: "Apple Configurator", devices: devices)
+        let started = ContinuousClock.now
+        func elapsed() -> TimeInterval {
+            let duration = started.duration(to: .now)
+            return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+        }
 
         // Keep the Mac awake: sleeping mid-restore would interrupt it.
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.idleSystemSleepDisabled, .userInitiated],
             reason: "Restoring a device with Apple Configurator")
 
-        Task {
+        return Task {
             defer { ProcessInfo.processInfo.endActivity(activity) }
             do {
-                for try await event in Configurator.run(operation, ecid: ecid) {
+                for try await event in run(operation, ecid) {
                     handle(event)
                 }
                 job?.state = .succeeded
                 job?.fraction = 1
                 append("Completed")
+                activityLog?.recordAction("\(kind == .restore ? "Restored" : "Revived") \(named) with Apple Configurator",
+                                          service: "Apple Configurator", devices: devices, duration: elapsed())
             } catch {
                 job?.state = .failed(error.localizedDescription)
                 append("Failed: \(error.localizedDescription)")
                 // cfgutil's message can name the device: private in the system log.
                 logger.error("Restore failed: \(error.localizedDescription, privacy: .private)")
+                activityLog?.recordAction("Couldn’t \(verb) \(named) with Apple Configurator",
+                                          note: error.localizedDescription, failed: true,
+                                          service: "Apple Configurator", devices: devices, duration: elapsed())
             }
         }
     }

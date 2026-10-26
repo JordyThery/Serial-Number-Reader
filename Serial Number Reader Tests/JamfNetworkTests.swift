@@ -47,11 +47,10 @@ struct JamfNetworkTests {
         let log = ActivityLog()
         let config = try #require(JamfConfiguration.make(
             urlString: "school.example.com", credentials: .jamfSchool(networkID: networkID, apiKey: apiKey)))
-        let client = JamfSchoolClient(baseURL: config.apiBaseURL, networkID: networkID, apiKey: apiKey,
-                                      recorder: recorder(server, log, service: "Jamf School"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf School"))
 
-        let record = try await client.lookup(.serialNumber(Self.serial))
-        try await client.updateAssetTag("LAB+01", udid: record.jamfID)
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
+        try await client.updateAssetTag("LAB+01", record: record)
 
         // The server did get the credentials…
         #expect(server.requests.count == 3)
@@ -72,13 +71,15 @@ struct JamfNetworkTests {
     func jamfSchoolErrorRedacted() async throws {
         let server = MockServer { _ in .json(500, #"{"code": 500, "message": "failed: password=hunter2"}"#) }
         let log = ActivityLog()
-        let client = JamfSchoolClient(baseURL: try #require(URL(string: "https://school.example.com")),
-                                      networkID: "1", apiKey: "key", recorder: recorder(server, log, service: "Jamf School"))
+        let config = try #require(JamfConfiguration.make(
+            urlString: "school.example.com", credentials: .jamfSchool(networkID: "1", apiKey: "key")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf School"))
         do {
             _ = try await client.lookup(.udid(Self.udid))
             Issue.record("Expected an error")
-        } catch let error as JamfError {
+        } catch {
             #expect(!error.localizedDescription.contains("hunter2"))
+            #expect(error.localizedDescription.contains("HTTP 500"))
         }
     }
 
@@ -95,9 +96,9 @@ struct JamfNetworkTests {
         let log = ActivityLog()
         let config = try #require(JamfConfiguration.make(
             urlString: "https://pro.example.com", credentials: .clientCredentials(clientID: "client", clientSecret: "shh-secret")))
-        let client = JamfClient(config: config, recorder: recorder(server, log, service: "Jamf Pro"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try await client.lookup(.serialNumber(Self.serial))
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
         _ = try await client.lookup(.serialNumber(Self.serial))
 
         #expect(record.kind == .mobileDevice)
@@ -127,13 +128,14 @@ struct JamfNetworkTests {
         let log = ActivityLog()
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .basic(username: "admin", password: "pa55word")))
-        let client = JamfClient(config: config, recorder: recorder(server, log, service: "Jamf Pro"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try await client.lookup(.serialNumber(Self.serial))
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
 
         #expect(record.kind == .computer)
         #expect(record.jamfID == "42")
-        #expect(server.requests.map(\.path) == ["/api/v1/auth/token", "/api/v2/mobile-devices/detail", "/api/v1/computers-inventory"])
+        #expect(record.name == "Lab Mac")
+        #expect(server.requests.map(\.path) == ["/api/v1/auth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
         #expect(server.requests[0].header("Authorization") == "Basic " + Data("admin:pa55word".utf8).base64EncodedString())
         #expect(server.requests[2].header("Authorization") == "Bearer user-token")
         #expect(!allText(log).contains("pa55word"))
@@ -148,7 +150,7 @@ struct JamfNetworkTests {
         }
         let config = try #require(JamfConfiguration.make(
             urlString: "", credentials: .platform(region: .us, clientID: "id", clientSecret: "secret", environmentID: environmentID)))
-        let client = JamfClient(config: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
         _ = try await client.lookup(.udid(Self.udid))
 
@@ -168,34 +170,38 @@ struct JamfNetworkTests {
         let log = ActivityLog()
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
-        let client = JamfClient(config: config, recorder: recorder(server, log, service: "Jamf Pro"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try await client.lookup(.serialNumber(Self.serial))
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
 
         #expect(record.jamfID == "7")
         #expect(lookups.value == 2)
         #expect(log.entries.contains { $0.isWarning && ($0.note ?? "").contains("HTTP 429") })
     }
 
-    @Test("The app's hints stay: wrong environment ID, missing permission")
+    @Test("JTKit's error format with the app's hints: wrong environment ID, missing permission")
     func platformHints() async throws {
         let status = Locked(400)
         let server = MockServer { request in
             if request.path == "/auth/token" { return .json(200, #"{"access_token": "t", "expires_in": 900}"#) }
-            return .json(status.value, #"{"errors": [{"code": "INVALID_REQUEST_CONTEXT_ID"}]}"#)
+            return .json(status.value, #"{"httpStatus": \#(status.value), "traceId": "trace-77", "errors": [{"code": "INVALID_REQUEST_CONTEXT_ID"}]}"#)
         }
         let config = try #require(JamfConfiguration.make(
             urlString: "", credentials: .platform(region: .eu, clientID: "id", clientSecret: "secret",
                                                   environmentID: "5E0C2A6B-1C3D-4E5F-8A9B-0C1D2E3F4A5B")))
-        let client = JamfClient(config: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
-        await #expect(throws: JamfError.httpError(400, "the environment ID doesn't belong to this integration — copy it from the integration's details in Jamf Account")) {
-            try await client.testConnection()
-        }
+        let wrongEnvironment = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let message = try #require(wrongEnvironment?.message())
+        #expect(message.hasPrefix("HTTP 400 Bad Request"))
+        #expect(message.contains("Trace ID: trace-77"))
+        #expect(message.contains("The Environment ID doesn’t belong to this integration."))
+        #expect(server.requests.last?.path == "/pro/v4/computers-inventory")
+
         status.value = 403
-        await #expect(throws: JamfError.httpError(403, "check that the integration is scoped to this platform environment and has the devices:read permission (devices:update to edit asset tags)")) {
-            try await client.testConnection()
-        }
+        let forbidden = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        #expect(forbidden?.message().contains("Serial Number Reader needs the devices:read permission, and devices:update to edit asset tags.") == true)
+        #expect(forbidden?.message().contains("Check its permissions in Jamf Account.") == true)
     }
 
     @Test("A refused sign-in shows the Platform API hint")
@@ -204,12 +210,10 @@ struct JamfNetworkTests {
         let config = try #require(JamfConfiguration.make(
             urlString: "", credentials: .platform(region: .eu, clientID: "id", clientSecret: "secret",
                                                   environmentID: "5E0C2A6B-1C3D-4E5F-8A9B-0C1D2E3F4A5B")))
-        let client = JamfClient(config: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
-        await #expect(throws: JamfError.authenticationFailed(
-            "HTTP 401 — check the client ID, secret and region. Jamf Account integrations expire after six months.")) {
-            try await client.testConnection()
-        }
+        let error = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        #expect(error?.message().contains("Check the client ID, client secret and region. Jamf Account integrations expire after six months.") == true)
     }
 
     @Test("Asset tag saves are retried after a server error")
@@ -221,13 +225,77 @@ struct JamfNetworkTests {
         }
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
-        let client = JamfClient(config: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
 
-        try await client.updateAssetTag("LAB-02", kind: .mobileDevice, jamfID: "7")
+        try await client.updateAssetTag("LAB-02", record: Self.record(.mobileDevice, id: "7"))
 
         #expect(patches.value == 2)
         #expect(server.requests.last?.method == "PATCH")
         #expect(server.requests.last?.bodyString == #"{"assetTag":"LAB-02"}"#)
+    }
+
+    @Test("A Mac's asset tag goes to v4")
+    func computerAssetTag() async throws {
+        let server = MockServer { request in
+            request.path == "/api/oauth/token" ? .json(200, #"{"access_token": "t", "expires_in": 1200}"#) : .json(200, "{}")
+        }
+        let config = try #require(JamfConfiguration.make(
+            urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+
+        try await client.updateAssetTag("", record: Self.record(.computer, id: "42"))
+
+        #expect(server.requests.last?.path == "/api/v4/computers-inventory-detail/42")
+        #expect(server.requests.last?.bodyString == #"{"general":{"assetTag":""}}"#)
+    }
+
+    @Test("A refused lookup names the Jamf Pro privilege; a wrong password mentions no region")
+    func jamfProHints() async throws {
+        let signIn = Locked(200)
+        let server = MockServer { request in
+            if request.path == "/api/v1/auth/token" {
+                return signIn.value == 200 ? .json(200, #"{"token": "t", "expires": "2099-01-01T00:00:00.000Z"}"#) : .json(401, "{}")
+            }
+            return .json(403, "{}")
+        }
+        let config = try #require(JamfConfiguration.make(
+            urlString: "pro.example.com", credentials: .basic(username: "admin", password: "pw")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+
+        let forbidden = await #expect(throws: JamfPlatformError.self) { _ = try await client.lookup(.udid(Self.udid)) }
+        #expect(forbidden?.message().contains("The user account is missing the “Read Mobile Devices” privilege.") == true)
+
+        signIn.value = 401
+        let wrong = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let message = try #require(wrong?.message())
+        #expect(message.contains("Check the username and password."))
+        #expect(!message.contains("region"))
+    }
+
+    @Test("A record whose serial isn't the one asked for is no match; two are ambiguous")
+    func exactMatches() async throws {
+        let answer = Locked(#"{"totalCount": 1, "results": [{"mobileDeviceId": "7", "hardware": {"serialNumber": "OTHER123"}}]}"#)
+        let server = MockServer { request in
+            if request.path == "/api/oauth/token" { return .json(200, #"{"access_token": "t", "expires_in": 1200}"#) }
+            return request.path == "/api/v2/mobile-devices/detail" ? .json(200, answer.value) : .json(200, Self.noDevices)
+        }
+        let config = try #require(JamfConfiguration.make(
+            urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+
+        #expect(try await client.lookup(.serialNumber(Self.serial)) == .noMatch)
+        answer.value = #"{"totalCount": 2, "results": [{"mobileDeviceId": "7", "hardware": {"serialNumber": "\#(Self.serial)"}}, {"mobileDeviceId": "8", "hardware": {"serialNumber": "\#(Self.serial)"}}]}"#
+        #expect(try await client.lookup(.serialNumber(Self.serial)) == .multipleMatches(2))
+    }
+
+    @Test("A serial from the USB descriptor with odd characters is never sent")
+    func invalidIdentifier() async throws {
+        let server = MockServer { _ in .json(200, #"{"access_token": "t", "expires_in": 1200}"#) }
+        let config = try #require(JamfConfiguration.make(
+            urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+        await #expect(throws: JamfPlatformError.self) { _ = try await client.lookup(.serialNumber("C02\"||1")) }
+        #expect(!server.requests.contains { $0.path.contains("mobile-devices") })
     }
 
     @Test("Export for Bug Report masks the serial number in the lookup address")
@@ -239,12 +307,27 @@ struct JamfNetworkTests {
         let log = ActivityLog()
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
-        let client = JamfClient(config: config, recorder: recorder(server, log, service: "Jamf Pro"))
+        let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
         _ = try await client.lookup(.serialNumber(Self.serial))
 
         #expect(ActivityLogExport.text(log.entries, masked: false).contains(Self.serial))
         #expect(!ActivityLogExport.text(log.entries, masked: true).contains(Self.serial))
+    }
+}
+
+extension JamfNetworkTests {
+    fileprivate nonisolated static func record(_ kind: JamfDeviceRecord.Kind, id: String) -> JamfDeviceRecord {
+        JamfDeviceRecord(kind: kind, jamfID: id, name: nil, assetTag: nil, serialNumber: nil, udid: nil, model: nil,
+                         modelIdentifier: nil, osVersion: nil, managed: nil, username: nil, realName: nil,
+                         email: nil, lastInventoryDate: nil)
+    }
+}
+
+extension JamfLookupResult {
+    var record: JamfDeviceRecord? {
+        if case .found(let record) = self { return record }
+        return nil
     }
 }
 
