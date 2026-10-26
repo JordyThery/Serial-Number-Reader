@@ -80,11 +80,16 @@ nonisolated enum Configurator {
     /// device in Recovery mode.
     static func run(_ operation: Operation, ecid: String) -> AsyncThrowingStream<ConfiguratorEvent, Error> {
         var arguments = ["--progress", "--format", "JSON", "-e", ecid]
+        // Named in the system log instead of the last argument, which for a
+        // restore from a file is its path.
+        let command: String
         switch operation {
         case .restore(let ipsw):
+            command = "restore"
             arguments.append("restore")
             if let ipsw { arguments += ["--ipsw", ipsw.path] }
         case .revive:
+            command = "revive"
             arguments.append("revive")
         }
 
@@ -118,7 +123,8 @@ nonisolated enum Configurator {
                         continuation.finish()
                     } else {
                         let message = lastError ?? (stderr.isEmpty ? "cfgutil exited with status \(process.terminationStatus)." : stderr)
-                        logger.error("cfgutil \(arguments.last ?? "", privacy: .public) failed: \(message, privacy: .public)")
+                        // cfgutil's message can hold the ECID or the device's name: private.
+                        logger.error("cfgutil \(command, privacy: .public) failed: \(message, privacy: .private)")
                         continuation.finish(throwing: Failure(message: message))
                     }
                 } catch {

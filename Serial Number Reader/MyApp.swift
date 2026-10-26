@@ -42,7 +42,8 @@ struct SerialNumberReaderApp: App {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
             configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader"),
-            activity: { logger.info("\($0, privacy: .public)") }
+            // A failed check can hold GitHub's answer: private in the system log.
+            activity: { logger.info("\($0, privacy: .private)") }
         )
     }()
 
@@ -77,6 +78,12 @@ struct SerialNumberReaderApp: App {
         }
 
         AboutWindow(configuration: .serialNumberReader)
+
+        // JTKit's shared activity log (Window › Activity Log, ⇧⌘L).
+        ActivityLogWindow(
+            log: jamf.activityLog,
+            emptyDescription: "Sign-ins, Jamf lookups, asset tag changes, connection tests and retries appear here as they happen."
+        )
     }
 
     /// The device list in connection order (oldest first), as export rows.

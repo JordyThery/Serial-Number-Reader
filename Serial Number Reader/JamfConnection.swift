@@ -74,7 +74,8 @@ final class JamfConnectionStore {
     init(defaults: UserDefaults = .standard, secrets: any SecretStore = JamfConnectionStore.keychain) {
         self.defaults = defaults
         let logger = Self.logger
-        let log: (String) -> Void = { logger.error("\($0, privacy: .public)") }
+        // Can name connections, Keychain accounts and files: private in the system log.
+        let log: (String) -> Void = { logger.error("\($0, privacy: .private)") }
         connections = ConnectionStore(
             storage: UserDefaultsConnectionStorage(key: Self.listKey, defaults: defaults),
             secrets: [.main: SecretLocation(store: secrets)],
@@ -99,7 +100,7 @@ final class JamfConnectionStore {
     /// Secrets of earlier versions and of saved connections share this service.
     nonisolated static let keychain = KeychainSecretStore(
         service: "be.jordythery.SerialNumberReader.jamf",
-        log: { logger.error("\($0, privacy: .public)") }
+        log: { logger.error("\($0, privacy: .private)") }
     )
 
     private nonisolated static let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Connections")

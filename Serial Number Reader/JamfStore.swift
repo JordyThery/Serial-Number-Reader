@@ -22,11 +22,13 @@ nonisolated enum JamfService: Sendable {
     case pro(JamfClient)
     case school(JamfSchoolClient)
 
-    init(configuration: JamfConfiguration) {
+    /// - Parameter recorder: sends and records each request (activity log).
+    init(configuration: JamfConfiguration, recorder: RequestRecorder) {
         if case .jamfSchool(let networkID, let apiKey) = configuration.credentials {
-            self = .school(JamfSchoolClient(baseURL: configuration.apiBaseURL, networkID: networkID, apiKey: apiKey))
+            self = .school(JamfSchoolClient(baseURL: configuration.apiBaseURL, networkID: networkID,
+                                            apiKey: apiKey, recorder: recorder))
         } else {
-            self = .pro(JamfClient(config: configuration))
+            self = .pro(JamfClient(config: configuration, recorder: recorder))
         }
     }
 
@@ -59,6 +61,8 @@ nonisolated enum JamfService: Sendable {
 final class JamfStore {
 
     let connections: JamfConnectionStore
+    /// JTKit's activity log (Window › Activity Log), filled by every request.
+    let activityLog: ActivityLog
 
     /// The active connection with its secret; nil when it is incomplete.
     private(set) var configuration: JamfConfiguration?
@@ -70,14 +74,36 @@ final class JamfStore {
     private(set) var configurationGeneration = 0
 
     @ObservationIgnored private var client: JamfService?
+    /// The connection name the client's log entries carry.
+    @ObservationIgnored private var clientConnectionName: String?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
+    @ObservationIgnored private let session: URLSession
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
 
-    /// - Parameter connections: the saved connections; the app's own by default.
-    init(connections: JamfConnectionStore? = nil) {
+    /// - Parameters:
+    ///   - connections: the saved connections; the app's own by default.
+    ///   - session: sends the requests; a fake server in tests.
+    ///   - activityLog: where requests are recorded; a new log by default.
+    init(connections: JamfConnectionStore? = nil, activityLog: ActivityLog? = nil,
+         session: URLSession = JamfStore.session) {
         self.connections = connections ?? JamfConnectionStore()
+        self.activityLog = activityLog ?? ActivityLog()
+        self.session = session
         configuration = activeConfiguration()
         observeConnections()
+    }
+
+    /// No cookies or cache kept between requests; 30 s per request.
+    nonisolated static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        return URLSession(configuration: configuration)
+    }()
+
+    /// Sends and records the requests of one connection, named in the log.
+    private func recorder(for record: JamfConnection) -> RequestRecorder {
+        RequestRecorder(session: session, log: activityLog, service: record.service.displayName,
+                        connection: record.name)
     }
 
     /// Builds the client configuration for a connection and its secret, or
@@ -153,10 +179,13 @@ final class JamfStore {
     }
 
     private func activeClient() -> JamfService? {
-        if let client { return client }
-        guard let configuration else { return nil }
-        let newClient = JamfService(configuration: configuration)
+        let record = connections.activeConnection
+        // A renamed connection gets a new client, so the log shows the new name.
+        if let client, clientConnectionName == record?.name { return client }
+        guard let configuration, let record else { return nil }
+        let newClient = JamfService(configuration: configuration, recorder: recorder(for: record))
         client = newClient
+        clientConnectionName = record.name
         return newClient
     }
 
@@ -206,7 +235,8 @@ final class JamfStore {
             } catch JamfError.multipleMatches(let count) {
                 state = .multipleMatches(count)
             } catch let error as JamfError {
-                logger.error("Jamf lookup failed: \(error.localizedDescription, privacy: .public)")
+                // Can hold the server's answer: private in the system log.
+                logger.error("Jamf lookup failed: \(error.localizedDescription, privacy: .private)")
                 state = .failed(error.localizedDescription)
             } catch {
                 state = .failed(error.localizedDescription)
@@ -255,7 +285,7 @@ final class JamfStore {
             throw JamfError.authenticationFailed(missing)
         }
         do {
-            try await JamfService(configuration: configuration).testConnection()
+            try await JamfService(configuration: configuration, recorder: recorder(for: record)).testConnection()
         } catch let error as JamfError {
             throw error
         } catch {

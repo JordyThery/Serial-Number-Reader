@@ -1,5 +1,5 @@
 import Foundation
-import os
+import JTKit
 
 /// Client for the Jamf School API: HTTP Basic authentication with the
 /// Network ID as user and an API key as password, and one device resource
@@ -15,19 +15,21 @@ import os
 /// Records are always read from the single-device endpoint, the only one that
 /// reports the instance's time zone for the check-in date. A serial lookup
 /// first finds the UDID through the list.
+///
+/// Requests go through JTKit's request recorder (activity log), which shows
+/// the Authorization header as "Basic <redacted>": nothing of the Network ID
+/// or the API key is recorded. Sign-in moves to JTKit in step 7.
 actor JamfSchoolClient {
 
     private let baseURL: URL
     private let authorization: String
-    private let session: URLSession
-    private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfSchool")
+    private let recorder: RequestRecorder
 
-    init(baseURL: URL, networkID: String, apiKey: String) {
+    /// - Parameter recorder: sends and records each request (activity log).
+    init(baseURL: URL, networkID: String, apiKey: String, recorder: RequestRecorder) {
         self.baseURL = baseURL
         authorization = "Basic " + Data("\(networkID):\(apiKey)".utf8).base64EncodedString()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: configuration)
+        self.recorder = recorder
     }
 
     // MARK: Lookups
@@ -151,11 +153,13 @@ actor JamfSchoolClient {
         let data: Data
         let status: Int
         do {
-            let (responseData, response) = try await session.data(for: request)
+            let (responseData, response) = try await recorder.send(request)
             data = responseData
-            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            status = response.statusCode
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            throw JamfError.networkFailure(error.localizedDescription)
+            throw JamfError.networkFailure(Redaction.text(error.localizedDescription))
         }
         try Self.throwIfError(status: status, data: data)
         return data
@@ -172,7 +176,8 @@ actor JamfSchoolClient {
         }
         let envelope = try? JSONDecoder().decode(Envelope.self, from: data)
         let code = envelope?.code?.value ?? envelope?.error?.code?.value
-        let message = envelope?.message ?? envelope?.error?.message
+        // The server's own words are shown to the user: secrets removed first.
+        let message = (envelope?.message ?? envelope?.error?.message).map(Redaction.text)
         let effective = (200...299).contains(status) ? (code ?? status) : status
         guard !(200...299).contains(effective) else { return }
 

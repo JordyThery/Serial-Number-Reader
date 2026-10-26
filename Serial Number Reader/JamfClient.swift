@@ -1,5 +1,5 @@
 import Foundation
-import os
+import JTKit
 
 // MARK: - Configuration & errors
 
@@ -189,20 +189,39 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
 // MARK: - Client
 
 /// Jamf Pro API client, reached directly or through the Jamf Platform API
-/// gateway (same endpoints and schemas). The access token is cached and
-/// refreshed shortly before expiry.
+/// gateway (same endpoints and schemas). Signing in, the token, retries and
+/// the activity log are JTKit's (`JamfTokenProvider`, `HTTPClient`); this
+/// client adds the lookups and the app's own error messages.
 actor JamfClient {
 
     private let config: JamfConfiguration
-    private let session: URLSession
-    private var cachedToken: (value: String, expiry: Date)?
-    private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfClient")
+    private let tokens: JamfTokenProvider?
+    private let http: HTTPClient
 
-    init(config: JamfConfiguration) {
+    /// - Parameter recorder: sends and records each request (activity log).
+    init(config: JamfConfiguration, recorder: RequestRecorder) {
         self.config = config
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: sessionConfig)
+        let signIn: (method: JamfTokenProvider.Method, secret: String)?
+        switch config.credentials {
+        case .clientCredentials(let clientID, let secret), .platform(_, let clientID, let secret, _):
+            // The Platform API uses the same OAuth client-credentials
+            // exchange, against the regional gateway.
+            signIn = (.apiClient(clientID: clientID), secret)
+        case .basic(let username, let password):
+            signIn = (.usernamePassword(username: username), password)
+        case .jamfSchool:
+            // Served by JamfSchoolClient, which needs no tokens.
+            signIn = nil
+        }
+        if let signIn, let tokenURL = config.tokenURL {
+            let secret = signIn.secret
+            tokens = JamfTokenProvider(tokenURL: tokenURL, method: signIn.method,
+                                       secret: { secret }, recorder: recorder)
+        } else {
+            tokens = nil
+        }
+        http = HTTPClient(baseURL: config.apiBaseURL, tokens: tokens, recorder: recorder,
+                          headers: config.contextHeaders)
     }
 
     // MARK: Public lookups
@@ -240,7 +259,15 @@ actor JamfClient {
     /// one cheap request through the environment — an inventory read, which
     /// the required devices:read permission covers.
     func testConnection() async throws {
-        _ = try await validToken(forceRefresh: true)
+        guard let tokens else {
+            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
+        }
+        await tokens.forgetToken()
+        do {
+            _ = try await tokens.token()
+        } catch {
+            throw mapped(error)
+        }
         if config.isPlatform {
             _ = try await authorizedGET(path: "v1/computers-inventory", queryItems: [
                 URLQueryItem(name: "section", value: "GENERAL"),
@@ -250,161 +277,65 @@ actor JamfClient {
         }
     }
 
-    // MARK: Token handling
-
-    private func validToken(forceRefresh: Bool = false) async throws -> String {
-        if !forceRefresh, let cachedToken, cachedToken.expiry > Date.now.addingTimeInterval(30) {
-            return cachedToken.value
-        }
-        let token: (value: String, expiry: Date)
-        switch config.credentials {
-        case .clientCredentials(let clientID, let clientSecret):
-            token = try await fetchOAuthToken(clientID: clientID, clientSecret: clientSecret)
-        case .basic(let username, let password):
-            token = try await fetchBasicAuthToken(username: username, password: password)
-        case .platform(_, let clientID, let clientSecret, _):
-            // Same OAuth client-credentials exchange, against the regional
-            // gateway; tokens last 900 s and are renewed like any other.
-            token = try await fetchOAuthToken(clientID: clientID, clientSecret: clientSecret)
-        case .jamfSchool:
-            // Served by JamfSchoolClient, which needs no tokens.
-            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
-        }
-        cachedToken = token
-        return token.value
-    }
-
-    /// OAuth client credentials (form-encoded): `/api/oauth/token` on Jamf Pro,
-    /// `/auth/token` on the Platform API gateway.
-    private func fetchOAuthToken(clientID: String, clientSecret: String) async throws -> (value: String, expiry: Date) {
-        guard let tokenURL = config.tokenURL else { throw JamfError.networkFailure("no token address") }
-        var request = URLRequest(url: tokenURL)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        var form = URLComponents()
-        form.queryItems = [
-            URLQueryItem(name: "grant_type", value: "client_credentials"),
-            URLQueryItem(name: "client_id", value: clientID),
-            URLQueryItem(name: "client_secret", value: clientSecret),
-        ]
-        request.httpBody = Data((form.percentEncodedQuery ?? "").utf8)
-
-        let data = try await performTokenRequest(request)
-
-        struct TokenResponse: Decodable {
-            let access_token: String
-            let expires_in: Double?
-        }
-        guard let token = try? JSONDecoder().decode(TokenResponse.self, from: data) else {
-            throw JamfError.decodingFailure("token response")
-        }
-        return (token.access_token, Date.now.addingTimeInterval(token.expires_in ?? 600))
-    }
-
-    /// Classic user account: POST /api/v1/auth/token with Basic auth.
-    /// Returns a bearer token (default lifetime 30 minutes).
-    private func fetchBasicAuthToken(username: String, password: String) async throws -> (value: String, expiry: Date) {
-        guard let tokenURL = config.tokenURL else { throw JamfError.networkFailure("no token address") }
-        var request = URLRequest(url: tokenURL)
-        request.httpMethod = "POST"
-        let basic = Data("\(username):\(password)".utf8).base64EncodedString()
-        request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let data = try await performTokenRequest(request)
-
-        struct TokenResponse: Decodable {
-            let token: String
-            let expires: String?
-        }
-        guard let token = try? JSONDecoder().decode(TokenResponse.self, from: data) else {
-            throw JamfError.decodingFailure("auth token response")
-        }
-        // "expires" is an ISO 8601 timestamp; fall back to 25 minutes.
-        let expiry = Self.parseDate(token.expires) ?? Date.now.addingTimeInterval(25 * 60)
-        return (token.token, expiry)
-    }
-
-    private func performTokenRequest(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await perform(request)
-        guard response.statusCode == 200 else {
-            logger.error("Token request failed: HTTP \(response.statusCode)")
-            if config.isPlatform, (400...401).contains(response.statusCode) {
-                throw JamfError.authenticationFailed(
-                    "HTTP \(response.statusCode) — check the client ID, secret and region. Jamf Account integrations expire after six months.")
-            }
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw JamfError.authenticationFailed("HTTP \(response.statusCode) \(body.prefix(200))")
-        }
-        return data
-    }
-
     // MARK: Requests
 
-    private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw JamfError.networkFailure("non-HTTP response")
-            }
-            return (data, http)
-        } catch let error as JamfError {
-            throw error
-        } catch {
-            throw JamfError.networkFailure(error.localizedDescription)
-        }
-    }
-
     private func authorizedGET(path: String, queryItems: [URLQueryItem]) async throws -> Data {
-        try await authorizedRequest(method: "GET", path: path, queryItems: queryItems, body: nil)
+        try await send(HTTPRequest(path: path, query: queryItems))
     }
 
-    private func authorizedRequest(
-        method: String, path: String, queryItems: [URLQueryItem], body: Data?
-    ) async throws -> Data {
-        let token = try await validToken()
-        var components = URLComponents(
-            url: config.apiBaseURL.appending(path: path),
-            resolvingAgainstBaseURL: false
-        )
-        if !queryItems.isEmpty { components?.queryItems = queryItems }
-        guard let url = components?.url else { throw JamfError.networkFailure("invalid request URL") }
+    private func send(_ request: HTTPRequest) async throws -> Data {
+        guard tokens != nil else {
+            throw JamfError.authenticationFailed("Jamf School is not handled by the Jamf Pro client")
+        }
+        do {
+            return try await http.send(request).data
+        } catch {
+            throw mapped(error)
+        }
+    }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        for (header, value) in config.contextHeaders {
-            request.setValue(value, forHTTPHeaderField: header)
-        }
-        if let body {
-            request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
-
-        var (data, response) = try await perform(request)
-        if response.statusCode == 401 {
-            // Token may have been revoked server-side; retry once with a fresh one.
-            let fresh = try await validToken(forceRefresh: true)
-            request.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
-            (data, response) = try await perform(request)
-        }
-        guard (200...299).contains(response.statusCode) else {
-            switch response.statusCode {
-            case 401:
-                throw JamfError.authenticationFailed("HTTP 401 — check the credentials and their Jamf Pro privileges")
-            case 400 where config.isPlatform
-                && String(decoding: data, as: UTF8.self).contains("INVALID_REQUEST_CONTEXT_ID"):
-                throw JamfError.httpError(400, "the environment ID doesn't belong to this integration — copy it from the integration's details in Jamf Account")
-            case 403 where config.isPlatform:
-                throw JamfError.httpError(403, "check that the integration is scoped to this platform environment and has the devices:read permission (devices:update to edit asset tags)")
-            case 403:
-                throw JamfError.httpError(403, "the account lacks the privilege for this action")
-            default:
-                throw JamfError.httpError(response.statusCode, String(data: data, encoding: .utf8)?.prefix(200).description ?? "")
+    /// JTKit's errors as the app's, with its hints for the usual mistakes.
+    /// Server answers are redacted (`Redaction`) before they are shown.
+    private func mapped(_ error: any Error) -> any Error {
+        switch error {
+        case is CancellationError, is JamfError:
+            return error
+        case HTTPError.status(let response, _, _, duringSignIn: true):
+            if config.isPlatform, (400...401).contains(response.status) {
+                return JamfError.authenticationFailed(
+                    "HTTP \(response.status) — check the client ID, secret and region. Jamf Account integrations expire after six months.")
             }
+            return JamfError.authenticationFailed("HTTP \(response.status) \(Self.detail(of: response))")
+        case HTTPError.status(let response, _, _, duringSignIn: false):
+            switch response.status {
+            case 401:
+                return JamfError.authenticationFailed("HTTP 401 — check the credentials and their Jamf Pro privileges")
+            case 400 where config.isPlatform
+                && String(decoding: response.data, as: UTF8.self).contains("INVALID_REQUEST_CONTEXT_ID"):
+                return JamfError.httpError(400, "the environment ID doesn't belong to this integration — copy it from the integration's details in Jamf Account")
+            case 403 where config.isPlatform:
+                return JamfError.httpError(403, "check that the integration is scoped to this platform environment and has the devices:read permission (devices:update to edit asset tags)")
+            case 403:
+                return JamfError.httpError(403, "the account lacks the privilege for this action")
+            default:
+                return JamfError.httpError(response.status, Self.detail(of: response))
+            }
+        case HTTPError.transport(_, _, _, let message):
+            return JamfError.networkFailure(message)
+        case HTTPError.decoding(let message):
+            return JamfError.decodingFailure(message)
+        default:
+            return JamfError.networkFailure(Redaction.text(error.localizedDescription))
         }
-        return data
+    }
+
+    /// The start of the server's answer on one line, redacted, at most 300 characters.
+    static func detail(of response: HTTPResponse) -> String {
+        guard let body = Redaction.body(response.data, contentType: response.header("Content-Type")) else { return "" }
+        let flat = body.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " ")
+        return flat.count > 300 ? String(flat.prefix(300)) + "…" : flat
     }
 
     // MARK: Asset tag updates
@@ -426,7 +357,9 @@ actor JamfClient {
             throw JamfError.httpError(400, "Jamf School records are updated by the Jamf School client")
         }
         let data = try JSONSerialization.data(withJSONObject: body)
-        _ = try await authorizedRequest(method: "PATCH", path: path, queryItems: [], body: data)
+        // Setting the same tag twice gives the same result, so a server error
+        // or a network drop may be retried.
+        _ = try await send(HTTPRequest(method: "PATCH", path: path, body: data, safeToRepeat: true))
     }
 
     // MARK: Mobile devices (GET /api/v2/mobile-devices/detail)

@@ -288,7 +288,7 @@ final class USBDeviceMonitor {
         logger.debug("""
             Apple USB device: pid=0x\(String(productID, radix: 16), privacy: .public) \
             name=\(productName ?? "nil", privacy: .public) \
-            serialDescriptor=\(serialString ?? "nil", privacy: .public)
+            serialDescriptor=\(serialString ?? "nil", privacy: .private)
             """)
         let location = (property("locationID", of: service) as NSNumber?).map { UInt32(truncatingIfNeeded: $0.int64Value) }
 

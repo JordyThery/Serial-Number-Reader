@@ -124,7 +124,8 @@ final class DeviceActionController {
             case .done:
                 onSuccess?()
             case .failed(let message):
-                logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .public)")
+                // The message can hold a UDID or the device's reply: private.
+                logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .private)")
                 lastError = message
             case .trustRequired(let deviceID):
                 trustRequiredDeviceID = deviceID

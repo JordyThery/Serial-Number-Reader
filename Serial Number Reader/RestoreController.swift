@@ -91,7 +91,8 @@ final class RestoreController {
             } catch {
                 job?.state = .failed(error.localizedDescription)
                 append("Failed: \(error.localizedDescription)")
-                logger.error("Restore failed: \(error.localizedDescription, privacy: .public)")
+                // cfgutil's message can name the device: private in the system log.
+                logger.error("Restore failed: \(error.localizedDescription, privacy: .private)")
             }
         }
     }
