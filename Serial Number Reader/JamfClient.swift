@@ -220,6 +220,21 @@ nonisolated enum JamfService: Sendable {
         }
     }
 
+    /// A client for one of JTKit's demo connections (demo mode): its demo
+    /// server, fake secret and private network, through the same JTKit code.
+    init(demo source: DemoSource, recorder: RequestRecorder) throws {
+        let connection = source.connection
+        if connection.service == .jamfSchool {
+            self = .school(try JamfSchool.Client(address: connection.serverURL, networkID: connection.clientID,
+                                                 apiKey: try source.secret(), recorder: recorder,
+                                                 hints: Self.schoolHints))
+        } else {
+            self = .pro(try JamfPlatform.Client(connection: connection, secret: source.secret, recorder: recorder,
+                                                hints: Self.proHints),
+                        isPlatform: connection.service == .jamfPlatform)
+        }
+    }
+
     /// Looks up a device. Serial queries try mobile devices first, then
     /// computers (recovery-mode Macs report a serial too). UDID queries are
     /// mobile-device only. Jamf School records are read from the

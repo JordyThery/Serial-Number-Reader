@@ -169,8 +169,8 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Remove Trust", systemImage: "lock.open.trianglebadge.exclamationmark")
                     }
-                    .disabled(isBusy || !Configurator.isAvailable)
-                    .help(Configurator.isAvailable
+                    .disabled(isBusy || !actions.isConfiguratorAvailable)
+                    .help(actions.isConfiguratorAvailable
                           ? "Remove the pairing between this Mac and the device, on both sides"
                           : "Requires Apple Configurator (free, App Store)")
                     Spacer()
@@ -214,7 +214,7 @@ struct DeviceDetailView: View {
 
     /// Why Restore and Revive can't run for this device, or nil when they can.
     private var restoreUnavailableReason: String? {
-        if !Configurator.isAvailable { return "Requires Apple Configurator (free, App Store)" }
+        if !actions.isConfiguratorAvailable { return "Requires Apple Configurator (free, App Store)" }
         if device.configuratorECID == nil {
             return "Apple Configurator hasn't identified this device yet"
         }
@@ -236,6 +236,9 @@ struct DeviceDetailView: View {
         }
         if vdmUnavailable {
             text += " Restart and Enter DFU are disabled while more than one device is connected, because the command targets a port rather than a specific device."
+        }
+        if PretendIPhone.isPretend(device) {
+            text += " In Demo Mode every action on this pretend iPhone is simulated: nothing is sent to a device and no password is asked."
         }
         return text
     }

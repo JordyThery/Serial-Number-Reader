@@ -9,6 +9,10 @@ import os
 ///
 /// The start and the end of each job are "Action" entries in the activity
 /// log, with the device's ECID for the masked export.
+///
+/// In demo mode a job runs only on the pretend iPhone and is simulated by
+/// `DemoUSB`; `cfgutil` never runs (tested). Outside demo mode the pretend
+/// iPhone is refused.
 @MainActor
 @Observable
 final class RestoreController {
@@ -64,22 +68,38 @@ final class RestoreController {
     private let activityLog: ActivityLog?
     /// Runs the job; Apple Configurator by default, a fake in tests.
     private let run: @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
+    /// Demo mode's pretend iPhone; nil without demo mode.
+    private let demo: DemoUSB?
 
-    init(activityLog: ActivityLog? = nil,
+    init(activityLog: ActivityLog? = nil, demo: DemoUSB? = nil,
          run: @escaping @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
-            = { Configurator.run($0, ecid: $1) }) {
+            = { LiveUSBHardware().runConfigurator($0, ecid: $1) }) {
         self.activityLog = activityLog
+        self.demo = demo
         self.run = run
     }
 
     /// Starts a Restore or Revive for one device. Ignored while another job
-    /// is running.
+    /// is running, and for a device that doesn't belong to the current mode:
+    /// a real one in demo mode, the pretend iPhone outside it.
     ///
     /// - Parameter serialNumber: named in the activity log, when known.
     @discardableResult
     func start(_ operation: Configurator.Operation, ecid: String, deviceName: String,
                serialNumber: String? = nil) -> Task<Void, Never>? {
         guard !isRunning else { return nil }
+        let simulated = demo?.isOn == true
+        guard simulated == PretendIPhone.isPretend(ecid: ecid) else {
+            logger.error("Restore refused: \(simulated ? "a real device in Demo Mode" : "the pretend iPhone outside Demo Mode", privacy: .public)")
+            return nil
+        }
+        let stream = if simulated, let demo { demo.run(operation, ecid: ecid) } else { run(operation, ecid) }
+        let demoNote: String? = simulated ? DeviceActionController.demoNote : nil
+        let connection: String? = simulated ? "Demo" : nil
+        func note(_ text: String?) -> String? {
+            let joined = [text, demoNote].compactMap { $0 }.joined(separator: " ")
+            return joined.isEmpty ? nil : joined
+        }
         let kind: Job.Kind
         var ipswName: String?
         switch operation {
@@ -96,8 +116,8 @@ final class RestoreController {
         let devices = [serialNumber, ecid].compactMap { $0 }
         let verb = kind == .restore ? "restore" : "revive"
         activityLog?.recordAction("Started to \(verb) \(named) with Apple Configurator",
-                                  note: kind == .restore ? "Firmware: \(ipswName ?? "the latest signed version")." : nil,
-                                  service: "Apple Configurator", devices: devices)
+                                  note: note(kind == .restore ? "Firmware: \(ipswName ?? "the latest signed version")." : nil),
+                                  service: "Apple Configurator", connection: connection, devices: devices)
         let started = ContinuousClock.now
         func elapsed() -> TimeInterval {
             let duration = started.duration(to: .now)
@@ -112,22 +132,24 @@ final class RestoreController {
         return Task {
             defer { ProcessInfo.processInfo.endActivity(activity) }
             do {
-                for try await event in run(operation, ecid) {
+                for try await event in stream {
                     handle(event)
                 }
                 job?.state = .succeeded
                 job?.fraction = 1
                 append("Completed")
                 activityLog?.recordAction("\(kind == .restore ? "Restored" : "Revived") \(named) with Apple Configurator",
-                                          service: "Apple Configurator", devices: devices, duration: elapsed())
+                                          note: note(nil), service: "Apple Configurator", connection: connection,
+                                          devices: devices, duration: elapsed())
             } catch {
                 job?.state = .failed(error.localizedDescription)
                 append("Failed: \(error.localizedDescription)")
                 // cfgutil's message can name the device: private in the system log.
                 logger.error("Restore failed: \(error.localizedDescription, privacy: .private)")
                 activityLog?.recordAction("Couldn’t \(verb) \(named) with Apple Configurator",
-                                          note: error.localizedDescription, failed: true,
-                                          service: "Apple Configurator", devices: devices, duration: elapsed())
+                                          note: note(error.localizedDescription), failed: true,
+                                          service: "Apple Configurator", connection: connection,
+                                          devices: devices, duration: elapsed())
             }
         }
     }
@@ -242,6 +264,8 @@ nonisolated enum FirmwareSigning {
     }
 
     private static func fetch<T: Decodable>(_ url: URL) async -> T? {
+        // A sandbox run (UI tests) makes no public lookups: the answer is "unknown".
+        guard !AppDemo.isSandboxLaunch else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         guard let (data, response) = try? await URLSession.shared.data(for: request),

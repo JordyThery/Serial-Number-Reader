@@ -114,8 +114,10 @@ final class JamfConnectionStore {
     /// The store for the app while it hosts unit tests: an empty, throwaway
     /// settings domain and no Keychain, so running the tests never converts
     /// or changes the real settings and Keychain items.
+    static let unitTestHostDomain = "be.jordythery.SerialNumberReader.unit-test-host"
+
     static func forUnitTestHost() -> JamfConnectionStore {
-        let domain = "be.jordythery.SerialNumberReader.unit-test-host"
+        let domain = unitTestHostDomain
         let defaults = UserDefaults(suiteName: domain) ?? .standard
         defaults.removePersistentDomain(forName: domain)
         return JamfConnectionStore(defaults: defaults, secrets: NoSecrets())
