@@ -18,7 +18,7 @@ struct MyApp {
 /// Owns the restore controller so quitting can be confirmed while a Restore
 /// or Revive runs.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let restore = RestoreController(activityLog: .app)
+    let restore = RestoreController(activityLog: .app, demo: AppDemo.usb)
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard restore.isRunning else { return .terminateNow }
@@ -34,11 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var monitor = USBDeviceMonitor()
-    @State private var jamf = JamfStore(connections: JamfConnectionStore.isUnitTestHost
-                                        ? .forUnitTestHost() : JamfConnectionStore(),
-                                        activityLog: .app)
-    @State private var actions = DeviceActionController(activityLog: .app)
+    @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
+    @State private var jamf = JamfStore(connections: AppDemo.connections(), activityLog: .app, demo: AppDemo.mode)
+    @State private var actions = DeviceActionController(activityLog: .app, demo: AppDemo.usb)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -53,16 +51,21 @@ struct SerialNumberReaderApp: App {
             ContentView(monitor: monitor, jamf: jamf, actions: actions, restore: appDelegate.restore)
                 .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
-                .task { await updates.checkAutomatically() }
+                .task {
+                    guard !AppDemo.isSandboxLaunch else { return }
+                    await updates.checkAutomatically()
+                }
         }
         .commands {
             AppInfoCommands(appName: "Serial Number Reader") { updates.checkManually() }
             // The toolbar picker's items, as JTKit's Connection menu.
             ConnectionCommands(
                 store: jamf.connections.connections,
-                selection: Binding(get: { jamf.connections.activeID },
-                                   set: { jamf.connections.activeID = $0 })
-            )
+                roles: [jamf.connectionRole(selection: Binding(get: { jamf.connections.activeID },
+                                                               set: { jamf.connections.activeID = $0 }))]
+            ) {
+                DemoModeSwitch(actions: actions, restore: appDelegate.restore)
+            }
             CommandGroup(replacing: .importExport) {
                 Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
                     .keyboardShortcut("e")
@@ -76,6 +79,8 @@ struct SerialNumberReaderApp: App {
         // JTKit's Settings window: General (Appearance), Connections, Updates.
         SettingsWindow(updates: updates, opensTabsByName: true) {
             SettingsView(jamf: jamf)
+                // Settings › Connections notes that these are the real connections.
+                .environment(AppDemo.mode)
         }
 
         AboutWindow(configuration: .serialNumberReader)

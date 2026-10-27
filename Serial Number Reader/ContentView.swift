@@ -18,11 +18,16 @@ struct ContentView: View {
         NavigationSplitView {
             Group {
                 if monitor.devices.isEmpty {
-                    ContentUnavailableView(
-                        "Connect an iPhone or iPad via USB",
-                        systemImage: "cable.connector",
-                        description: Text("Devices in Normal, Recovery and DFU mode are detected automatically — including devices that won't boot.")
-                    )
+                    ContentUnavailableView {
+                        Label("Connect an iPhone or iPad via USB", systemImage: "cable.connector")
+                    } description: {
+                        Text("Devices in Normal, Recovery and DFU mode are detected automatically — including devices that won't boot.")
+                    } actions: {
+                        if let demo = monitor.demo?.mode, !demo.isOn {
+                            Button("Try \(DemoMode.title)") { demo.isOn = true }
+                                .help("Show a pretend iPhone with sample Jamf data. Nothing is sent to a device or a tenant.")
+                        }
+                    }
                 } else {
                     List(monitor.devices, selection: $selectedDeviceID) { device in
                         DeviceRow(device: device, jamfState: jamf.state(for: device),
@@ -37,6 +42,11 @@ struct ContentView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 300, ideal: 340)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if monitor.demo?.isOn == true {
+                    DemoModeSidebarNote()
+                }
+            }
             .toolbar {
                 Button {
                     monitor.clearDisconnected()
@@ -92,7 +102,10 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 @Bindable var connections = jamf.connections
-                ConnectionPicker(store: connections.connections, selection: $connections.activeID)
+                ConnectionPicker(store: connections.connections,
+                                 role: jamf.connectionRole(selection: $connections.activeID)) {
+                    DemoModeSwitch(actions: actions, restore: restore)
+                }
             }
         }
         .onChange(of: jamf.configurationGeneration) {
@@ -101,6 +114,36 @@ struct ContentView: View {
                 jamf.lookupIfNeeded(for: device)
             }
         }
+    }
+}
+
+// MARK: - Demo Mode
+
+/// JTKit's "Demo Mode" switch, for the picker and the Connection menu. Dimmed
+/// while a USB action or a restore runs, so demo mode can't cut into it.
+struct DemoModeSwitch: View {
+    let actions: DeviceActionController
+    let restore: RestoreController
+
+    var body: some View {
+        DemoModeToggle(demo: AppDemo.mode)
+            .disabled(actions.runningAction != nil || restore.isRunning)
+    }
+}
+
+/// Below the device list in demo mode: real devices are hidden.
+struct DemoModeSidebarNote: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Label("Real devices aren’t shown in Demo Mode.", systemImage: "testtube.2")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+        }
+        .background(.bar)
     }
 }
 

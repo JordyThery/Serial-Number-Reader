@@ -12,7 +12,7 @@ struct SettingsView: View {
             store: connections.connections,
             services: [.jamfPro, .jamfPlatform, .jamfSchool],
             optionalFields: [.jamfProWebURL],
-            roles: [.active(selection: $connections.activeID)],
+            roles: [jamf.connectionRole(selection: $connections.activeID)],
             newRecord: { connections.newConnection(service: $0) },
             didDelete: { _ in connections.connectionWasDeleted() },
             test: { record, typed in

@@ -7,14 +7,31 @@ import os
 /// Watches IOKit for Apple USB devices (vendor ID 0x05AC) arriving and
 /// leaving, classifies them by product ID, and publishes an observable list.
 /// The UI consumes `devices` and nothing else touches IOKit.
+///
+/// In demo mode it doesn't watch USB at all and lists only `DemoUSB`'s
+/// pretend iPhone: real devices are hidden and nothing is read from them.
+/// When demo mode is turned off it watches again and real devices reappear.
 @MainActor
 @Observable
 final class USBDeviceMonitor {
 
     /// Connection log: one entry per plug-in event, newest first. Entries
     /// stay (marked disconnected) until the user removes them, and a device
-    /// reconnecting gets a fresh entry.
-    private(set) var devices: [USBDevice] = []
+    /// reconnecting gets a fresh entry. In demo mode: the pretend iPhone's.
+    var devices: [USBDevice] {
+        if let demo, demo.isOn { return demo.devices }
+        return realDevices
+    }
+
+    /// The real devices; always empty in demo mode.
+    private var realDevices: [USBDevice] = []
+
+    /// Whether IOKit is being watched (never in demo mode).
+    var isWatchingUSB: Bool { notifyPort != nil }
+
+    private let hardware: any USBHardware
+    let demo: DemoUSB?
+    @ObservationIgnored private var isStarted = false
 
     static let appleVendorID = 0x05AC
     static let dfuProductID = 0x1227
@@ -34,10 +51,52 @@ final class USBDeviceMonitor {
 
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "USBDeviceMonitor")
 
+    /// - Parameters:
+    ///   - hardware: the lockdown and Configurator reads; the real ones by default.
+    ///   - demo: demo mode's pretend iPhone; nil without demo mode.
+    init(hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil) {
+        self.hardware = hardware
+        self.demo = demo
+    }
+
     // MARK: - Lifecycle
 
+    /// Starts watching USB, or, in demo mode, plugs in the pretend iPhone;
+    /// from then on follows the demo switch.
     func start() {
-        guard notifyPort == nil else { return }
+        guard !isStarted else { return }
+        isStarted = true
+        followDemoMode()
+    }
+
+    /// Stops everything: no more watching, the list is emptied.
+    func stop() {
+        isStarted = false
+        stopWatching()
+        demo?.disconnect()
+    }
+
+    private func followDemoMode() {
+        guard isStarted else { return }
+        if let demo, demo.isOn {
+            // Before anything else: from here on nothing reads a real device.
+            stopWatching()
+            demo.connect()
+        } else {
+            demo?.disconnect()
+            startWatching()
+        }
+        guard let demo else { return }
+        withObservationTracking {
+            _ = demo.isOn
+        } onChange: { [weak self] in
+            // Called before the change: apply it afterwards.
+            Task { @MainActor [weak self] in self?.followDemoMode() }
+        }
+    }
+
+    private func startWatching() {
+        guard notifyPort == nil, demo?.isOn != true else { return }
         guard let port = IONotificationPortCreate(kIOMainPortDefault) else {
             logger.error("IONotificationPortCreate failed")
             return
@@ -76,12 +135,14 @@ final class USBDeviceMonitor {
         handleRemoved(iterator: removedIterator)
     }
 
-    func stop() {
+    /// Stops watching and forgets the real devices (hidden in demo mode;
+    /// they're found again when watching starts).
+    private func stopWatching() {
         if addedIterator != 0 { IOObjectRelease(addedIterator); addedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
         if let notifyPort { IONotificationPortDestroy(notifyPort) }
         notifyPort = nil
-        devices.removeAll()
+        realDevices.removeAll()
     }
 
     /// Matching dictionary for USB devices.
@@ -104,41 +165,48 @@ final class USBDeviceMonitor {
         var service = IOIteratorNext(iterator)
         while service != 0 {
             if let device = makeDevice(from: service) {
-                if let index = devices.firstIndex(where: { $0.id == device.id }) {
-                    // Re-published entry: keep details already read from the device.
-                    var updated = device
-                    let existing = devices[index]
-                    if existing.lockdownInfo != nil || existing.configurator != nil {
-                        updated.lockdownInfo = existing.lockdownInfo
-                        updated.configurator = existing.configurator
-                        updated.modelInfo = existing.modelInfo
-                        updated.isTrusted = existing.isTrusted
-                    }
-                    devices[index] = updated
-                } else {
-                    // Drop this device's own stale disconnected rows so a
-                    // device cycling modes (Normal→DFU→Normal during a restart)
-                    // doesn't pile up duplicates. Distinct connected devices
-                    // keep their own rows.
-                    if let key = device.identityKey {
-                        devices.removeAll { !$0.isConnected && $0.identityKey == key }
-                    } else if device.isOpaqueDFU {
-                        // Opaque DFU entries share no identity; collapse prior
-                        // disconnected ones so they don't accumulate either.
-                        devices.removeAll { !$0.isConnected && $0.isOpaqueDFU }
-                    }
-                    // Newest on top.
-                    devices.insert(device, at: 0)
-                    if device.mode == .normal, let udid = device.udid {
-                        readLockdownInfo(deviceID: device.id, udid: udid)
-                    }
-                    if device.mode == .dfu {
-                        identifyWithConfigurator(deviceID: device.id)
-                    }
-                }
+                add(device)
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
+        }
+    }
+
+    /// A real device arrived (from IOKit, or a test). Ignored in demo mode:
+    /// nothing is read from it, and it isn't listed.
+    func add(_ device: USBDevice) {
+        guard demo?.isOn != true, !PretendIPhone.isPretend(device) else { return }
+        if let index = realDevices.firstIndex(where: { $0.id == device.id }) {
+            // Re-published entry: keep details already read from the device.
+            var updated = device
+            let existing = realDevices[index]
+            if existing.lockdownInfo != nil || existing.configurator != nil {
+                updated.lockdownInfo = existing.lockdownInfo
+                updated.configurator = existing.configurator
+                updated.modelInfo = existing.modelInfo
+                updated.isTrusted = existing.isTrusted
+            }
+            realDevices[index] = updated
+        } else {
+            // Drop this device's own stale disconnected rows so a
+            // device cycling modes (Normal→DFU→Normal during a restart)
+            // doesn't pile up duplicates. Distinct connected devices
+            // keep their own rows.
+            if let key = device.identityKey {
+                realDevices.removeAll { !$0.isConnected && $0.identityKey == key }
+            } else if device.isOpaqueDFU {
+                // Opaque DFU entries share no identity; collapse prior
+                // disconnected ones so they don't accumulate either.
+                realDevices.removeAll { !$0.isConnected && $0.isOpaqueDFU }
+            }
+            // Newest on top.
+            realDevices.insert(device, at: 0)
+            if device.mode == .normal, let udid = device.udid {
+                readLockdownInfo(deviceID: device.id, udid: udid)
+            }
+            if device.mode == .dfu {
+                identifyWithConfigurator(deviceID: device.id)
+            }
         }
     }
 
@@ -147,10 +215,10 @@ final class USBDeviceMonitor {
         while service != 0 {
             var entryID: UInt64 = 0
             if IORegistryEntryGetRegistryEntryID(service, &entryID) == KERN_SUCCESS,
-               let index = devices.firstIndex(where: { $0.id == entryID }) {
+               let index = realDevices.firstIndex(where: { $0.id == entryID }) {
                 // Keep the entry cached so its data stays visible after unplugging.
-                devices[index].isConnected = false
-                devices[index].disconnectedAt = .now
+                realDevices[index].isConnected = false
+                realDevices[index].disconnectedAt = .now
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
@@ -166,9 +234,10 @@ final class USBDeviceMonitor {
         Task {
             for attempt in 0..<5 {
                 if attempt > 0 { try? await Task.sleep(for: .seconds(1)) }
-                guard devices.contains(where: { $0.id == deviceID && $0.isConnected }) else { return }
+                guard realDevices.contains(where: { $0.id == deviceID && $0.isConnected }) else { return }
+                let hardware = hardware
                 let info = try? await Task.detached(priority: .utility) {
-                    try Usbmux.deviceInfo(udid: udid)
+                    try hardware.deviceInfo(udid: udid)
                 }.value
                 if let info {
                     apply(info, toDeviceID: deviceID)
@@ -182,14 +251,17 @@ final class USBDeviceMonitor {
 
     /// Re-checks whether this Mac holds a pairing for a booted device — after
     /// the user taps Trust, or after Remove Trust.
+    /// In demo mode the pretend iPhone's trust is simulated: nothing is read.
     func refreshTrust(deviceID: UInt64) {
-        guard let device = devices.first(where: { $0.id == deviceID }),
+        guard demo?.isOn != true,
+              let device = realDevices.first(where: { $0.id == deviceID }),
               device.mode == .normal, device.isConnected, let udid = device.udid
         else { return }
+        let hardware = hardware
         Task {
-            let trusted = await Task.detached(priority: .utility) { Usbmux.hasPairRecord(udid: udid) }.value
-            if let index = devices.firstIndex(where: { $0.id == deviceID }) {
-                devices[index].isTrusted = trusted
+            let trusted = await Task.detached(priority: .utility) { hardware.hasPairRecord(udid: udid) }.value
+            if let index = realDevices.firstIndex(where: { $0.id == deviceID }) {
+                realDevices[index].isTrusted = trusted
             }
         }
     }
@@ -201,12 +273,13 @@ final class USBDeviceMonitor {
     /// take a moment to see a new device, hence the retries. Silent when
     /// Configurator isn't installed or doesn't list the device.
     private func identifyWithConfigurator(deviceID: UInt64) {
-        guard Configurator.isAvailable else { return }
+        guard hardware.isConfiguratorAvailable else { return }
+        let hardware = hardware
         Task {
             for attempt in 0..<4 {
                 if attempt > 0 { try? await Task.sleep(for: .seconds(2)) }
-                guard let device = devices.first(where: { $0.id == deviceID && $0.isConnected }) else { return }
-                let listed = (try? await Task.detached(priority: .utility) { try Configurator.listDevices() }.value) ?? []
+                guard let device = realDevices.first(where: { $0.id == deviceID && $0.isConnected }) else { return }
+                let listed = (try? await Task.detached(priority: .utility) { try hardware.listConfiguratorDevices() }.value) ?? []
                 if let match = Self.configuratorMatch(in: listed, locationID: device.locationID, ecid: device.ecid) {
                     apply(match, toDeviceID: deviceID)
                     return
@@ -231,25 +304,26 @@ final class USBDeviceMonitor {
     }
 
     private func apply(_ match: ConfiguratorDevice, toDeviceID deviceID: UInt64) {
-        guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
-        devices[index].configurator = match
-        if devices[index].modelInfo == nil, let deviceType = match.deviceType {
-            devices[index].modelInfo = ModelDatabase.shared.model(identifier: deviceType)
+        guard let index = realDevices.firstIndex(where: { $0.id == deviceID }) else { return }
+        realDevices[index].configurator = match
+        if realDevices[index].modelInfo == nil, let deviceType = match.deviceType {
+            realDevices[index].modelInfo = ModelDatabase.shared.model(identifier: deviceType)
         }
     }
 
-    /// Marks a device as no longer trusted after Remove Trust succeeded.
+    /// Marks a device as no longer trusted after Remove Trust succeeded
+    /// (the pretend iPhone keeps its own trust).
     func markUntrusted(deviceID: UInt64) {
-        if let index = devices.firstIndex(where: { $0.id == deviceID }) {
-            devices[index].isTrusted = false
+        if let index = realDevices.firstIndex(where: { $0.id == deviceID }) {
+            realDevices[index].isTrusted = false
         }
     }
 
     private func apply(_ info: LockdownDeviceInfo, toDeviceID deviceID: UInt64) {
-        guard let index = devices.firstIndex(where: { $0.id == deviceID }) else { return }
-        devices[index].lockdownInfo = info
+        guard let index = realDevices.firstIndex(where: { $0.id == deviceID }) else { return }
+        realDevices[index].lockdownInfo = info
         if let productType = info.productType {
-            devices[index].modelInfo = ModelDatabase.shared.model(identifier: productType)
+            realDevices[index].modelInfo = ModelDatabase.shared.model(identifier: productType)
         }
     }
 
@@ -258,11 +332,13 @@ final class USBDeviceMonitor {
     /// Removes a cached (disconnected) entry. Connected devices can't be
     /// removed — they would immediately reappear.
     func removeFromList(_ id: USBDevice.ID) {
-        devices.removeAll { $0.id == id && !$0.isConnected }
+        if let demo, demo.isOn { return demo.removeFromList(id) }
+        realDevices.removeAll { $0.id == id && !$0.isConnected }
     }
 
     func clearDisconnected() {
-        devices.removeAll { !$0.isConnected }
+        if let demo, demo.isOn { return demo.clearDisconnected() }
+        realDevices.removeAll { !$0.isConnected }
     }
 
     var hasDisconnectedDevices: Bool {

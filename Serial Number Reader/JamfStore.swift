@@ -2,6 +2,7 @@ import Foundation
 import JTKit
 import Observation
 import os
+import SwiftUI
 
 /// Lookup state for one device, keyed by its Jamf query.
 nonisolated enum JamfLookupState: Equatable, Sendable {
@@ -18,6 +19,12 @@ nonisolated enum JamfLookupState: Equatable, Sendable {
 
 /// Owns the active Jamf connection's API client and per-device lookup
 /// results. The saved connections are in `connections`.
+///
+/// In demo mode the connection in use is one of JTKit's demo connections
+/// ("Contoso Jamf Pro (Demo)" or "Contoso Academy (Demo)", in `demoChoice`),
+/// answered by JTKit's demo servers inside the app; the saved connections and
+/// the one in use stay as they are. Test Connection always uses the real
+/// connection and the real network.
 @MainActor
 @Observable
 final class JamfStore {
@@ -35,9 +42,14 @@ final class JamfStore {
     /// instead of being cached against the new server.
     private(set) var configurationGeneration = 0
 
+    /// Demo mode's connections; nil without demo mode.
+    let demoChoice: DemoConnectionChoice?
+
     @ObservationIgnored private var client: JamfService?
-    /// The connection name the client's log entries carry.
-    @ObservationIgnored private var clientConnectionName: String?
+    /// The connection (ID and name) the client is for: the log names it.
+    @ObservationIgnored private var clientKey: String?
+    /// The demo connection in use when the lookups were last reset.
+    @ObservationIgnored private var demoConnectionID: UUID?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
     @ObservationIgnored private let session: URLSession
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
@@ -46,13 +58,28 @@ final class JamfStore {
     ///   - connections: the saved connections; the app's own by default.
     ///   - session: sends the requests; a fake server in tests.
     ///   - activityLog: where requests are recorded; a new log by default.
+    ///   - demo: the app's demo mode; nil without demo mode.
     init(connections: JamfConnectionStore? = nil, activityLog: ActivityLog? = nil,
-         session: URLSession = JamfStore.session) {
+         session: URLSession = JamfStore.session, demo: DemoMode? = nil) {
         self.connections = connections ?? JamfConnectionStore()
         self.activityLog = activityLog ?? ActivityLog()
         self.session = session
+        demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoJamfPro, .demoJamfSchool]) }
         configuration = activeConfiguration()
+        demoConnectionID = demoConnection?.id
         observeConnections()
+    }
+
+    /// The picker's, the Connection menu's and Settings' role: the saved
+    /// connection in use, or in demo mode the demo connections.
+    func connectionRole(selection: Binding<UUID?>) -> ConnectionRole {
+        .active(selection: selection, demo: demoChoice)
+    }
+
+    /// The demo connection in use while demo mode is on, else nil.
+    var demoConnection: Connection? {
+        guard let demoChoice, demoChoice.isActive else { return nil }
+        return demoChoice.selected
     }
 
     /// No cookies or cache kept between requests; 30 s per request.
@@ -98,13 +125,17 @@ final class JamfStore {
     }
 
     /// "Jamf Pro" or "Jamf School", for section titles and messages.
-    var productName: String { connections.activeConnection?.service == .jamfSchool ? "Jamf School" : "Jamf Pro" }
+    var productName: String {
+        let service = demoConnection?.service ?? connections.activeConnection?.service
+        return service == .jamfSchool ? "Jamf School" : "Jamf Pro"
+    }
 
-    var isConfigured: Bool { configuration != nil }
+    var isConfigured: Bool { demoConnection != nil || configuration != nil }
 
     /// Base URL for "Open in Jamf Pro" links; nil when unknown (Platform API
-    /// without the optional Jamf Pro URL).
-    var webBaseURL: URL? { configuration?.webBaseURL }
+    /// without the optional Jamf Pro URL), and in demo mode: the demo
+    /// servers have no web pages.
+    var webBaseURL: URL? { demoConnection == nil ? configuration?.webBaseURL : nil }
 
     private func activeConfiguration() -> JamfConfiguration? {
         guard let record = connections.activeConnection else { return nil }
@@ -116,6 +147,7 @@ final class JamfStore {
     private func observeConnections() {
         withObservationTracking {
             _ = connections.activeConnection
+            _ = demoConnection
         } onChange: { [weak self] in
             // Called before the change: read the new values afterwards.
             Task { @MainActor [weak self] in
@@ -127,8 +159,10 @@ final class JamfStore {
 
     private func connectionsChanged() {
         let updated = activeConfiguration()
-        guard updated != configuration else { return }
+        let demoID = demoConnection?.id
+        guard updated != configuration || demoID != demoConnectionID else { return }
         configuration = updated
+        demoConnectionID = demoID
         invalidateClient()
     }
 
@@ -143,13 +177,26 @@ final class JamfStore {
     /// The client of the connection in use; nil when there is none.
     /// - Throws: why JTKit can't make one, e.g. an address that isn't HTTPS.
     private func activeClient() throws -> JamfService? {
+        if let demo = demoConnection {
+            // Demo mode: JTKit's demo server, its fake secret and its private network.
+            let key = "demo \(demo.id)"
+            if let client, clientKey == key { return client }
+            guard let source = demoChoice?.mode.source(for: demo) else { return nil }
+            let recorder = RequestRecorder(session: source.session, log: activityLog,
+                                           service: demo.service.displayName, connection: demo.name)
+            let newClient = try JamfService(demo: source, recorder: recorder)
+            client = newClient
+            clientKey = key
+            return newClient
+        }
         let record = connections.activeConnection
         // A renamed connection gets a new client, so the log shows the new name.
-        if let client, clientConnectionName == record?.name { return client }
+        let key = record.map { "\($0.id) \($0.name)" }
+        if let client, clientKey == key { return client }
         guard let configuration, let record else { return nil }
         let newClient = try JamfService(configuration: configuration, recorder: recorder(for: record))
         client = newClient
-        clientConnectionName = record.name
+        clientKey = key
         return newClient
     }
 
@@ -248,6 +295,7 @@ final class JamfStore {
 
     /// Test Connection in Settings, with the editor's values, saved or not.
     /// A secret typed in the editor is used instead of the stored one.
+    /// Always the real connection and the real network, also in demo mode.
     func testConnection(_ record: JamfConnection, typedSecret: String?) async throws -> String {
         let secret = typedSecret ?? connections.secret(for: record) ?? ""
         guard let configuration = Self.configuration(for: record, secret: secret) else {

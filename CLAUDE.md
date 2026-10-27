@@ -25,6 +25,7 @@ All sources are in one folder, `Serial Number Reader/`.
 - Restore: `Configurator` (runs Apple Configurator's `cfgutil`), `RestoreController` (the running job, IPSW checks against ipsw.me), `RestoreViews`.
 - Jamf: `JamfClient.swift` (`JamfService`, `JamfConfiguration`, `JamfDeviceRecord`, the app's own error hints), `JamfConnection` (+ `JamfConnectionStore`), `JamfStore` (lookups per device, asset tag, Test Connection), `LegacySettingsConversion`.
 - UI and app: `MyApp`, `ContentView`, `DeviceDetailView`, `SettingsView`, `AboutInfo` (About and the acknowledgement), `SessionExport` (CSV, copy all serials).
+- Demo mode: `AppDemo` (JTKit's `DemoMode`, saved under `demoMode`, and the sandbox run), `DemoUSB` (the pretend iPhone, `PretendIPhone`: `DemoWorld` device 42, `ZZDEMOP42RX`, in Contoso Jamf Pro), `USBHardware` (the one doorway to real devices: lockdown, iBoot, VDMs, `cfgutil`; `LiveUSBHardware` refuses the pretend iPhone's identifiers). Lookups use JTKit's demo connections "Contoso Jamf Pro (Demo)" and "Contoso Academy (Demo)" (`JamfStore.demoChoice`).
 
 From JTKit: `JamfPlatform.Client` (Jamf Pro direct and through the gateway), the `JamfPro` lookups and asset-tag calls, `JamfSchool.Client`, `RequestRecorder`, `JamfRegion`, `JamfPlatformError`/`JamfSchoolError`, `ConnectionStore` + `ConnectionPicker` + `ConnectionCommands`, `KeychainSecretStore`, `ActivityLog` + `ActivityLogWindow`, `SettingsWindow`, `AboutWindow` + `Acknowledgement`, `UpdateChecker`. Tests use `MockServer` from `JTKitTestSupport`.
 
@@ -41,6 +42,7 @@ Build facts: not sandboxed (`ENABLE_APP_SANDBOX = NO`, needed for IOKit and the 
 - System-log (`os.Logger`) messages that can hold an identifier or a server answer are `.private`.
 - Every USB action that ran (Restart, Enter DFU, Enter Recovery, Boot to Normal, Restore, Revive, Remove Trust) writes an "Action" entry to the activity log, done or failed, with the device's identifiers for the masked export. A cancelled administrator prompt writes nothing.
 - The app sends no MDM commands; all actions go over USB.
+- **Demo mode never reaches a real device:** while it is on, `USBDeviceMonitor` doesn't watch USB (real devices are hidden, the sidebar says so) and every action, Restore and Revive goes to `DemoUSB`; a real device is refused, and outside demo mode the pretend iPhone is refused (`DemoModeTests`). Anything new that touches a device goes through `USBHardware`. The Demo Mode switch is dimmed while an action or restore runs. Test Connection stays real.
 - Restore: one device at a time; the confirmation has Cancel as default and a destructive "Erase & Restore"; the IPSW is checked against the model and Apple's signing status before anything is erased; quitting during a restore warns.
 - Restart / Enter DFU target the first port with a connected device, so the UI offers them only while one device is attached.
 - Network use: only the Jamf servers, GitHub (update check) and ipsw.me (model identifier and build only). Keep it that way.
