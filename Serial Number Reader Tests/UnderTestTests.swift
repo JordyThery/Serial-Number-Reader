@@ -103,10 +103,9 @@ struct UnderTestTests {
 
     @Test("Only the app's real settings or Keychain count as the saved connections")
     func whatCountsAsSaved() {
-        let domain = "snr-under-test-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: domain)!
-        defer { defaults.removePersistentDomain(forName: domain) }
-        #expect(!JamfConnectionStore(defaults: defaults, secrets: InMemorySecretStore()).holdsSavedConnections)
+        let settings = TemporaryDefaults("under-test")
+        defer { settings.remove() }
+        #expect(!JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore()).holdsSavedConnections)
         #expect(!JamfConnectionStore.forUnitTestHost().holdsSavedConnections)
     }
 

@@ -121,10 +121,14 @@ final class JamfConnectionStore {
     static let unitTestHostDomain = "be.jordythery.SerialNumberReader.unit-test-host"
 
     static func forUnitTestHost() -> JamfConnectionStore {
-        let domain = unitTestHostDomain
-        let defaults = UserDefaults(suiteName: domain) ?? .standard
+        JamfConnectionStore(defaults: emptiedDefaults(domain: unitTestHostDomain), secrets: NoSecrets())
+    }
+
+    /// A throwaway settings domain, emptied before anything reads it.
+    static func emptiedDefaults(domain: String) -> UserDefaults {
+        guard let defaults = UserDefaults(suiteName: domain) else { return .standard }
         defaults.removePersistentDomain(forName: domain)
-        return JamfConnectionStore(defaults: defaults, secrets: NoSecrets())
+        return defaults
     }
 
     private nonisolated struct NoSecrets: SecretStore {

@@ -24,6 +24,7 @@ struct RestoreSheet: View {
     /// nil while unknown (lookup failed, or a beta ipsw.me doesn't list).
     @State private var ipswSigned: Bool?
     @State private var checkingIPSW = false
+    @State private var refusal: String?
 
     private var productType: String? { device.modelInfo?.identifier }
 
@@ -80,6 +81,7 @@ struct RestoreSheet: View {
         .padding(20)
         .frame(width: 500)
         .task { await loadLatest() }
+        .restoreRefusalAlert($refusal)
     }
 
     private var latestLabel: String {
@@ -139,7 +141,7 @@ struct RestoreSheet: View {
 
     private func loadLatest() async {
         guard let productType else { return }
-        latest = await FirmwareSigning.latestSigned(productType: productType)
+        latest = await FirmwareSigning.latestSigned(productType: productType, pretendDevice: PretendIPhone.isPretend(device))
     }
 
     private func chooseIPSW() {
@@ -171,7 +173,8 @@ struct RestoreSheet: View {
                 return
             }
             if let productType {
-                let signed = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion)
+                let signed = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion,
+                                                           pretendDevice: PretendIPhone.isPretend(device))
                 guard isCurrent else { return }
                 ipswSigned = signed
             }
@@ -185,9 +188,13 @@ struct RestoreSheet: View {
 
     private func startRestore() {
         guard let ecid = device.configuratorECID else { return }
-        restore.start(.restore(ipsw: source == .ipsw ? ipswURL : nil),
-                      ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber)
-        dismiss()
+        // A refused start keeps the sheet open and says why.
+        if restore.start(.restore(ipsw: source == .ipsw ? ipswURL : nil),
+                         ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber) != nil {
+            dismiss()
+        } else {
+            refusal = restore.refusal ?? "The restore couldn't start."
+        }
     }
 }
 
@@ -200,6 +207,7 @@ struct ReviveSheet: View {
     let restore: RestoreController
 
     @Environment(\.dismiss) private var dismiss
+    @State private var refusal: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -219,15 +227,32 @@ struct ReviveSheet: View {
                     .keyboardShortcut(.defaultAction)
                 Button("Revive") {
                     guard let ecid = device.configuratorECID else { return }
-                    restore.start(.revive, ecid: ecid, deviceName: device.modelDisplayName,
-                                  serialNumber: device.serialNumber)
-                    dismiss()
+                    // A refused start keeps the sheet open and says why.
+                    if restore.start(.revive, ecid: ecid, deviceName: device.modelDisplayName,
+                                     serialNumber: device.serialNumber) != nil {
+                        dismiss()
+                    } else {
+                        refusal = restore.refusal ?? "The revive couldn't start."
+                    }
                 }
                 .disabled(device.configuratorECID == nil || restore.isRunning)
             }
         }
         .padding(20)
         .frame(width: 460)
+        .restoreRefusalAlert($refusal)
+    }
+}
+
+private extension View {
+    /// Says why a Restore or Revive didn't start; the sheet stays open.
+    func restoreRefusalAlert(_ refusal: Binding<String?>) -> some View {
+        alert("Couldn't Start", isPresented: Binding(get: { refusal.wrappedValue != nil },
+                                                     set: { if !$0 { refusal.wrappedValue = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(refusal.wrappedValue ?? "")
+        }
     }
 }
 
