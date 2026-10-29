@@ -42,7 +42,7 @@ struct LiveTenant {
     /// in-memory connection list and settings of this run's.
     let store: JamfStore
     let activity = ActivityLog()
-    private let defaultsDomain: String
+    private let settings = TemporaryDefaults("live")
 
     /// - Parameter session: what the app's store sends through: the guarded
     ///   network, or a fence in front of it.
@@ -65,16 +65,14 @@ struct LiveTenant {
         default:
             throw LiveFailure("\(role): \(service.rawValue) isn't used by Serial Number Reader")
         }
-        defaultsDomain = "snr-live-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: defaultsDomain))
-        let connections = JamfConnectionStore(defaults: defaults, secrets: InMemorySecretStore())
+        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         try connections.connections.save(record, secrets: [.main: secret])
         connections.activeID = record.id
         store = JamfStore(connections: connections, activityLog: activity, session: session ?? run.network.session)
     }
 
     func removeSettings() {
-        UserDefaults.standard.removePersistentDomain(forName: defaultsDomain)
+        settings.remove()
     }
 
     /// JTKit's client for the test code (picking a serial, the test record),

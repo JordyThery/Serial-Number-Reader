@@ -206,11 +206,12 @@ struct DemoUSBTests {
 @Suite("Demo mode: Jamf lookups and connections")
 struct DemoJamfTests {
     /// A store whose real network is a fake server that must stay unused in demo mode.
+    /// Its settings domain is removed with its file by the test (`defer`).
     private func store(_ mode: DemoMode, server: MockServer, log: ActivityLog? = nil)
-        -> (JamfStore, UserDefaults) {
-        let defaults = UserDefaults(suiteName: "snr-demo-\(UUID().uuidString)") ?? .standard
-        let connections = JamfConnectionStore(defaults: defaults, secrets: InMemorySecretStore())
-        return (JamfStore(connections: connections, activityLog: log ?? ActivityLog(), session: server.session, demo: mode), defaults)
+        -> (JamfStore, TemporaryDefaults) {
+        let settings = TemporaryDefaults("demo")
+        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        return (JamfStore(connections: connections, activityLog: log ?? ActivityLog(), session: server.session, demo: mode), settings)
     }
 
     private func found(_ store: JamfStore, _ device: USBDevice) async -> JamfDeviceRecord? {
@@ -225,7 +226,8 @@ struct DemoJamfTests {
         let server = MockServer { _ in .json(500, "{}") }
         let mode = demoMode(on: true)
         let log = ActivityLog()
-        let (store, _) = store(mode, server: server, log: log)
+        let (store, settings) = store(mode, server: server, log: log)
+        defer { settings.remove() }
         let usb = pretendIPhone(mode)
         usb.connect()
         let booted = try #require(usb.devices.first)
@@ -250,7 +252,8 @@ struct DemoJamfTests {
     func jamfSchool() async throws {
         let server = MockServer { _ in .json(500, "{}") }
         let mode = demoMode(on: true)
-        let (store, _) = store(mode, server: server)
+        let (store, settings) = store(mode, server: server)
+        defer { settings.remove() }
         let usb = pretendIPhone(mode)
         usb.connect()
         let booted = try #require(usb.devices.first)
@@ -271,7 +274,8 @@ struct DemoJamfTests {
                 ? .json(200, #"{"access_token": "t", "expires_in": 1200}"#) : .json(200, "{}")
         }
         let mode = demoMode(on: true)
-        let (store, _) = store(mode, server: server)
+        let (store, settings) = store(mode, server: server)
+        defer { settings.remove() }
         let record = JamfConnection(name: "Real", service: .jamfPro, signIn: .apiClient,
                                     serverURL: "pro.example.com", clientID: "client")
         #expect(try await store.testConnection(record, typedSecret: "secret") == "Authenticated successfully")
@@ -285,7 +289,9 @@ struct DemoJamfTests {
     func savedConnectionsUnchanged() async throws {
         let server = MockServer { _ in .json(500, "{}") }
         let mode = demoMode(on: false)
-        let (store, defaults) = store(mode, server: server)
+        let (store, settings) = store(mode, server: server)
+        defer { settings.remove() }
+        let defaults = settings.defaults
         let saved = JamfConnection(name: "Real", service: .jamfPro, signIn: .apiClient,
                                    serverURL: "pro.example.com", clientID: "client")
         try store.connections.connections.save(saved, secrets: [.main: "secret"])

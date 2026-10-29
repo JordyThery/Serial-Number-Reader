@@ -287,11 +287,21 @@ final class JamfStore {
             return "\(productName) is not configured."
         }
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = configurationGeneration
         do {
             try await client.updateAssetTag(trimmed, record: record)
+            // Show what Jamf stored, not what was typed: read the record back.
+            // If that read fails, the saved value is shown as typed.
             var updated = record
             updated.assetTag = trimmed.isEmpty ? nil : trimmed
-            lookupStates[query] = .found(updated)
+            if case .found(let stored)? = try? await client.lookup(query), stored.jamfID == record.jamfID {
+                updated = stored
+            }
+            // Saved on the server that was in use; if the connection changed
+            // meanwhile, its result doesn't belong in the new server's list.
+            if generation == configurationGeneration {
+                lookupStates[query] = .found(updated)
+            }
             return nil
         } catch {
             return error.localizedDescription

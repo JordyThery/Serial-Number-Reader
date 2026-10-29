@@ -79,20 +79,31 @@ final class RestoreController {
         self.run = run
     }
 
-    /// Starts a Restore or Revive for one device. Ignored while another job
-    /// is running, and for a device that doesn't belong to the current mode:
-    /// a real one in demo mode, the pretend iPhone outside it.
+    /// Why the last `start` was refused, for the sheet to show; nil after a start.
+    private(set) var refusal: String?
+
+    /// Starts a Restore or Revive for one device. Refused (nil, with the
+    /// reason in `refusal`) while another job is running, and for a device
+    /// that doesn't belong to the current mode: a real one in demo mode, the
+    /// pretend iPhone outside it.
     ///
     /// - Parameter serialNumber: named in the activity log, when known.
     @discardableResult
     func start(_ operation: Configurator.Operation, ecid: String, deviceName: String,
                serialNumber: String? = nil) -> Task<Void, Never>? {
-        guard !isRunning else { return nil }
+        guard !isRunning else {
+            refusal = "Another restore or revive is still running. Wait until it finishes, then try again."
+            return nil
+        }
         let simulated = demo?.isOn == true
         guard simulated == PretendIPhone.isPretend(ecid: ecid) else {
             logger.error("Restore refused: \(simulated ? "a real device in Demo Mode" : "the pretend iPhone outside Demo Mode", privacy: .public)")
+            refusal = simulated
+                ? "Demo Mode is on, so only the pretend iPhone can be restored. Turn off Demo Mode to restore this device."
+                : "The pretend iPhone can only be restored in Demo Mode."
             return nil
         }
+        refusal = nil
         let stream = if simulated, let demo { demo.run(operation, ecid: ecid) } else { run(operation, ecid) }
         let demoNote: String? = simulated ? DeviceActionController.demoNote : nil
         let connection: String? = simulated ? "Demo" : nil
@@ -242,8 +253,14 @@ nonisolated enum FirmwareSigning {
         let signed: Bool
     }
 
+    /// What the pretend iPhone's Restore sheet shows in demo mode: a made-up
+    /// signed release, so demo mode never asks ipsw.me.
+    static let demoLatest = Firmware(version: "26.0", build: "23A0042", signed: true)
+
     /// Whether a specific build is signed for the model; nil when unknown.
-    static func isSigned(productType: String, build: String) async -> Bool? {
+    /// - Parameter pretendDevice: the pretend iPhone (demo mode): no lookup, signed.
+    static func isSigned(productType: String, build: String, pretendDevice: Bool = false) async -> Bool? {
+        if pretendDevice { return true }
         guard let url = URL(string: "https://api.ipsw.me/v4/ipsw/\(productType)/\(build)") else { return nil }
         struct Response: Decodable { let signed: Bool }
         guard let response: Response = await fetch(url) else { return nil }
@@ -251,7 +268,9 @@ nonisolated enum FirmwareSigning {
     }
 
     /// The newest signed release for the model; nil when unknown.
-    static func latestSigned(productType: String) async -> Firmware? {
+    /// - Parameter pretendDevice: the pretend iPhone (demo mode): no lookup, `demoLatest`.
+    static func latestSigned(productType: String, pretendDevice: Bool = false) async -> Firmware? {
+        if pretendDevice { return demoLatest }
         guard let url = URL(string: "https://api.ipsw.me/v4/device/\(productType)?type=ipsw") else { return nil }
         struct Response: Decodable {
             struct Entry: Decodable { let version: String; let buildid: String; let signed: Bool }
@@ -264,8 +283,9 @@ nonisolated enum FirmwareSigning {
     }
 
     private static func fetch<T: Decodable>(_ url: URL) async -> T? {
-        // A sandbox run (UI tests) makes no public lookups: the answer is "unknown".
-        guard !AppDemo.isSandboxLaunch else { return nil }
+        // Under tests (the unit-test host, a sandbox run) no public lookups:
+        // the answer is "unknown".
+        guard !UnderTest.isActive else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         guard let (data, response) = try? await URLSession.shared.data(for: request),

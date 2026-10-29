@@ -9,10 +9,12 @@ enum AppDemo {
     static let usb = DemoUSB(mode: mode)
 
     /// Where the switch is saved: the app's settings; as the unit-test host
-    /// its throwaway settings. A sandbox run saves nothing (JTKit).
+    /// its throwaway settings, emptied first, so a switch left on by an
+    /// earlier run can't turn demo mode on for this one. A sandbox run saves
+    /// nothing (JTKit).
     private static var defaults: UserDefaults {
         guard JamfConnectionStore.isUnitTestHost else { return .standard }
-        return UserDefaults(suiteName: JamfConnectionStore.unitTestHostDomain) ?? .standard
+        return JamfConnectionStore.emptiedDefaults(domain: JamfConnectionStore.unitTestHostDomain)
     }
 
     /// The saved connections for this launch: in a sandbox run (`-JTKitSandbox
