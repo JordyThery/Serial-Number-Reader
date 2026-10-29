@@ -9,9 +9,18 @@
 /* Begin PBXBuildFile section */
 		087B3265308E407A00D0CB8A /* JTKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0A0000000000000000000002 /* JTKit */; };
 		087B407E308E943800D0CB8A /* JTKitTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 087B407D308E943800D0CB8A /* JTKitTestSupport */; };
+		088B865A30930ED300F87877 /* JTKitUITestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 088B865930930ED300F87877 /* JTKitUITestSupport */; };
+		088B865C30930F2300F87877 /* JTKitLiveCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 088B865B30930F2300F87877 /* JTKitLiveCheck */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		088B865430930ECE00F87877 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = "Serial Number Reader";
+		};
 		08FC3F2630761881007EB97F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
@@ -23,6 +32,7 @@
 
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Serial Number Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Serial Number Reader.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		088B865030930ECE00F87877 /* Serial Number Reader UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Serial Number Reader UITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		08FC3F2230761880007EB97F /* Serial Number Reader Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Serial Number Reader Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -30,6 +40,16 @@
 		000000000000000000000010 /* Serial Number Reader */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "Serial Number Reader";
+			sourceTree = "<group>";
+		};
+		088B864430930EAF00F87877 /* SerialNumberReaderUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SerialNumberReaderUITests;
+			sourceTree = "<group>";
+		};
+		088B865130930ECE00F87877 /* Serial Number Reader UITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Serial Number Reader UITests";
 			sourceTree = "<group>";
 		};
 		08FC3F2330761881007EB97F /* Serial Number Reader Tests */ = {
@@ -46,9 +66,16 @@
 				087B3265308E407A00D0CB8A /* JTKit in Frameworks */,
 			);
 		};
+		088B864D30930ECE00F87877 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				088B865A30930ED300F87877 /* JTKitUITestSupport in Frameworks */,
+			);
+		};
 		08FC3F1F30761880007EB97F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				088B865C30930F2300F87877 /* JTKitLiveCheck in Frameworks */,
 				087B407E308E943800D0CB8A /* JTKitTestSupport in Frameworks */,
 			);
 		};
@@ -60,6 +87,8 @@
 			children = (
 				000000000000000000000010 /* Serial Number Reader */,
 				08FC3F2330761881007EB97F /* Serial Number Reader Tests */,
+				088B864430930EAF00F87877 /* SerialNumberReaderUITests */,
+				088B865130930ECE00F87877 /* Serial Number Reader UITests */,
 				087B407C308E943800D0CB8A /* Frameworks */,
 				000000000000000000000020 /* Products */,
 			);
@@ -70,6 +99,7 @@
 			children = (
 				000000000000000000000120 /* Serial Number Reader.app */,
 				08FC3F2230761880007EB97F /* Serial Number Reader Tests.xctest */,
+				088B865030930ECE00F87877 /* Serial Number Reader UITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -105,6 +135,30 @@
 			productReference = 000000000000000000000120 /* Serial Number Reader.app */;
 			productType = "com.apple.product-type.application";
 		};
+		088B864F30930ECE00F87877 /* Serial Number Reader UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 088B865630930ECE00F87877 /* Build configuration list for PBXNativeTarget "Serial Number Reader UITests" */;
+			buildPhases = (
+				088B864C30930ECE00F87877 /* Sources */,
+				088B864D30930ECE00F87877 /* Frameworks */,
+				088B864E30930ECE00F87877 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				088B865530930ECE00F87877 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				088B865130930ECE00F87877 /* Serial Number Reader UITests */,
+			);
+			name = "Serial Number Reader UITests";
+			packageProductDependencies = (
+				088B865930930ED300F87877 /* JTKitUITestSupport */,
+			);
+			productName = "Serial Number Reader UITests";
+			productReference = 088B865030930ECE00F87877 /* Serial Number Reader UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		08FC3F2130761880007EB97F /* Serial Number Reader Tests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 08FC3F2830761881007EB97F /* Build configuration list for PBXNativeTarget "Serial Number Reader Tests" */;
@@ -124,6 +178,7 @@
 			name = "Serial Number Reader Tests";
 			packageProductDependencies = (
 				087B407D308E943800D0CB8A /* JTKitTestSupport */,
+				088B865B30930F2300F87877 /* JTKitLiveCheck */,
 			);
 			productName = "Serial Number Reader Tests";
 			productReference = 08FC3F2230761880007EB97F /* Serial Number Reader Tests.xctest */;
@@ -136,11 +191,15 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2700;
+				LastSwiftUpdateCheck = 2710;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					088B864F30930ECE00F87877 = {
+						CreatedOnToolsVersion = 27.1;
+						TestTargetID = 000000000000000100000000;
 					};
 					08FC3F2130761880007EB97F = {
 						CreatedOnToolsVersion = 27.0;
@@ -167,12 +226,18 @@
 			targets = (
 				000000000000000100000000 /* Serial Number Reader */,
 				08FC3F2130761880007EB97F /* Serial Number Reader Tests */,
+				088B864F30930ECE00F87877 /* Serial Number Reader UITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000140000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		088B864E30930ECE00F87877 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -190,6 +255,11 @@
 			files = (
 			);
 		};
+		088B864C30930ECE00F87877 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 		08FC3F1E30761880007EB97F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -198,6 +268,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		088B865530930ECE00F87877 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* Serial Number Reader */;
+			targetProxy = 088B865430930ECE00F87877 /* PBXContainerItemProxy */;
+		};
 		08FC3F2730761881007EB97F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 000000000000000100000000 /* Serial Number Reader */;
@@ -448,6 +523,48 @@
 			};
 			name = Release;
 		};
+		088B865730930ECE00F87877 /* Debug configuration for PBXNativeTarget "Serial Number Reader UITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "be.jordythery.Serial-Number-Reader-UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = "Serial Number Reader";
+			};
+			name = Debug;
+		};
+		088B865830930ECE00F87877 /* Release configuration for PBXNativeTarget "Serial Number Reader UITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "be.jordythery.Serial-Number-Reader-UITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = "Serial Number Reader";
+			};
+			name = Release;
+		};
 		08FC3F2930761881007EB97F /* Debug configuration for PBXNativeTarget "Serial Number Reader Tests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -456,8 +573,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = K3LQ9NPBMG;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 14;
+				MACOSX_DEPLOYMENT_TARGET = 14;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.QFKR8IQ9.Serial-Number-Reader.Serial-Number-Reader-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -470,7 +587,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Serial Number Reader.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Serial Number Reader";
-				XROS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 14;
 			};
 			name = Debug;
 		};
@@ -482,8 +599,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = K3LQ9NPBMG;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 14;
+				MACOSX_DEPLOYMENT_TARGET = 14;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.QFKR8IQ9.Serial-Number-Reader.Serial-Number-Reader-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -496,7 +613,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Serial Number Reader.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Serial Number Reader";
-				XROS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 14;
 			};
 			name = Release;
 		};
@@ -519,6 +636,14 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		088B865630930ECE00F87877 /* Build configuration list for PBXNativeTarget "Serial Number Reader UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				088B865730930ECE00F87877 /* Debug configuration for PBXNativeTarget "Serial Number Reader UITests" */,
+				088B865830930ECE00F87877 /* Release configuration for PBXNativeTarget "Serial Number Reader UITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
 		08FC3F2830761881007EB97F /* Build configuration list for PBXNativeTarget "Serial Number Reader Tests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -535,7 +660,7 @@
 			repositoryURL = "https://github.com/JordyThery/JTKit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.11.7;
+				minimumVersion = 0.12.3;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -545,6 +670,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0A0000000000000000000001 /* XCRemoteSwiftPackageReference "JTKit" */;
 			productName = JTKitTestSupport;
+		};
+		088B865930930ED300F87877 /* JTKitUITestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0A0000000000000000000001 /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKitUITestSupport;
+		};
+		088B865B30930F2300F87877 /* JTKitLiveCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0A0000000000000000000001 /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKitLiveCheck;
 		};
 		0A0000000000000000000002 /* JTKit */ = {
 			isa = XCSwiftPackageProductDependency;

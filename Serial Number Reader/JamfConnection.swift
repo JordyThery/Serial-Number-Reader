@@ -63,6 +63,9 @@ final class JamfConnectionStore {
 
     let connections: ConnectionStore<JamfConnection>
     @ObservationIgnored private let defaults: UserDefaults
+    /// Whether this is the real list: the app's settings and Keychain items.
+    /// Under tests its requests are refused (`SavedConnectionGuard`).
+    let holdsSavedConnections: Bool
 
     var activeID: UUID? {
         didSet { defaults.set(activeID?.uuidString, forKey: Self.activeKey) }
@@ -73,6 +76,7 @@ final class JamfConnectionStore {
     ///   - secrets: where secrets are kept, old and new; the app's Keychain items by default.
     init(defaults: UserDefaults = .standard, secrets: any SecretStore = JamfConnectionStore.keychain) {
         self.defaults = defaults
+        holdsSavedConnections = defaults === UserDefaults.standard || secrets is KeychainSecretStore
         let logger = Self.logger
         // Can name connections, Keychain accounts and files: private in the system log.
         let log: (String) -> Void = { logger.error("\($0, privacy: .private)") }

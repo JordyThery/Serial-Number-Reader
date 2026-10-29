@@ -30,6 +30,9 @@ final class USBDeviceMonitor {
     var isWatchingUSB: Bool { notifyPort != nil }
 
     private let hardware: any USBHardware
+    /// False under tests with the real doorway: the unit-test host and the
+    /// release check never watch real USB, so a plugged-in device is never read.
+    private let watchesRealUSB: Bool
     let demo: DemoUSB?
     @ObservationIgnored private var isStarted = false
 
@@ -54,9 +57,11 @@ final class USBDeviceMonitor {
     /// - Parameters:
     ///   - hardware: the lockdown and Configurator reads; the real ones by default.
     ///   - demo: demo mode's pretend iPhone; nil without demo mode.
-    init(hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil) {
+    ///   - underTest: whether this launch is under tests (`UnderTest.isActive`).
+    init(hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil, underTest: Bool = UnderTest.isActive) {
         self.hardware = hardware
         self.demo = demo
+        watchesRealUSB = !(underTest && hardware is LiveUSBHardware)
     }
 
     // MARK: - Lifecycle
@@ -96,7 +101,7 @@ final class USBDeviceMonitor {
     }
 
     private func startWatching() {
-        guard notifyPort == nil, demo?.isOn != true else { return }
+        guard notifyPort == nil, demo?.isOn != true, watchesRealUSB else { return }
         guard let port = IONotificationPortCreate(kIOMainPortDefault) else {
             logger.error("IONotificationPortCreate failed")
             return
