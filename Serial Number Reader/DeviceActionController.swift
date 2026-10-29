@@ -307,6 +307,8 @@ final class DeviceActionController {
     /// Uses `osascript … with administrator privileges` to run our own binary
     /// as root with `--vdm <action>`. A single OS password prompt authorises it.
     private nonisolated static func executeViaAppleScript(_ action: String) -> RunResult {
+        // Second safeguard behind LiveUSBHardware: no administrator prompt, no VDM under tests.
+        if let refusal = USBGuard.shared.refusal(for: "administrator prompt for --vdm \(action)") { return .failure(refusal) }
         let executablePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
         // Quote for the embedded shell command inside the AppleScript string.
         let shellCommand = "\(shellQuoted(executablePath)) --vdm \(action)"

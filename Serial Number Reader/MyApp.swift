@@ -9,6 +9,8 @@ struct MyApp {
         // sends the USB-PD VDM and exits — the GUI never starts.
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--vdm"), index + 1 < args.count {
+            // Never under tests (a third safeguard: the prompt that starts this is refused too).
+            if USBGuard.shared.refusal(for: "--vdm \(args[index + 1])") != nil { exit(2) }
             exit(VDMTool.run(withAction: args[index + 1]))
         }
         SerialNumberReaderApp.main()
@@ -52,7 +54,9 @@ struct SerialNumberReaderApp: App {
                 .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
                 .task {
-                    guard !AppDemo.isSandboxLaunch else { return }
+                    // No update check under tests: neither in a sandbox run nor
+                    // as the unit-test host (it shares the app's settings).
+                    guard !UnderTest.isActive else { return }
                     await updates.checkAutomatically()
                 }
         }

@@ -96,6 +96,8 @@ nonisolated enum Configurator {
         return AsyncThrowingStream { continuation in
             Task.detached(priority: .userInitiated) {
                 do {
+                    // Second safeguard behind LiveUSBHardware: cfgutil never starts under tests.
+                    try USBGuard.shared.check("cfgutil \(command)")
                     guard let cfgutil = cfgutilURL else { throw Failure(message: "Apple Configurator is not installed.") }
                     let process = Process()
                     process.executableURL = cfgutil
@@ -248,6 +250,8 @@ nonisolated enum Configurator {
     }
 
     private static func runToCompletion(_ arguments: [String]) throws -> Completed {
+        // Second safeguard behind LiveUSBHardware: cfgutil never starts under tests.
+        try USBGuard.shared.check("cfgutil \(arguments.last ?? "")")
         guard let cfgutil = cfgutilURL else { throw Failure(message: "Apple Configurator is not installed.") }
         let process = Process()
         process.executableURL = cfgutil

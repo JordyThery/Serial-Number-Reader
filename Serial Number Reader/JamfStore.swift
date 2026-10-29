@@ -61,9 +61,14 @@ final class JamfStore {
     ///   - demo: the app's demo mode; nil without demo mode.
     init(connections: JamfConnectionStore? = nil, activityLog: ActivityLog? = nil,
          session: URLSession = JamfStore.session, demo: DemoMode? = nil) {
-        self.connections = connections ?? JamfConnectionStore()
+        let connections = connections ?? JamfConnectionStore()
+        self.connections = connections
         self.activityLog = activityLog ?? ActivityLog()
-        self.session = session
+        // Under tests the saved connections are never reached: every request
+        // for them, sign-in and Test Connection included, is refused and
+        // written down for the release check (demo connections are unaffected).
+        self.session = UnderTest.isActive && connections.holdsSavedConnections
+            ? SavedConnectionGuard.refusingSession() : session
         demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoJamfPro, .demoJamfSchool]) }
         configuration = activeConfiguration()
         demoConnectionID = demoConnection?.id
