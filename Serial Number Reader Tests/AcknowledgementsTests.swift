@@ -14,10 +14,10 @@ struct AcknowledgementsTests {
         let start = try #require(notices.range(of: "```\n"))
         let end = try #require(notices.range(of: "\n```", range: start.upperBound..<notices.endIndex))
         let fromNotices = String(notices[start.upperBound..<end.lowerBound])
-        let inApp = try #require(Acknowledgement.macvdmtool.licence)
+        let inApp = try #require(Acknowledgement.macvdmtool.license)
         #expect(inApp == fromNotices)
         #expect(inApp.contains("Version 2.0, January 2004"))
-        #expect(Acknowledgement.macvdmtool.licenceName == "Apache License")
+        #expect(Acknowledgement.macvdmtool.licenseName == "Apache License")
     }
 
     @Test func creditsBothCopyrightHolders() throws {

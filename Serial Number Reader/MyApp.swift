@@ -56,7 +56,7 @@ struct SerialNumberReaderApp: App {
                 .task {
                     // No update check under tests: neither in a sandbox run nor
                     // as the unit-test host (it shares the app's settings).
-                    guard !UnderTest.isActive else { return }
+                    guard !TestRun.isActive else { return }
                     await updates.checkAutomatically()
                 }
         }

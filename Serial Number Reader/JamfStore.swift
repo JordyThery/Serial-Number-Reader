@@ -67,8 +67,8 @@ final class JamfStore {
         // Under tests the saved connections are never reached: every request
         // for them, sign-in and Test Connection included, is refused and
         // written down for the release check (demo connections are unaffected).
-        self.session = UnderTest.isActive && connections.holdsSavedConnections
-            ? SavedConnectionGuard.refusingSession() : session
+        self.session = TestRun.isActive && connections.holdsSavedConnections
+            ? TestRun.refusingSession(log: .savedConnections, message: UnderTest.refusal) : session
         demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoJamfPro, .demoJamfSchool]) }
         configuration = activeConfiguration()
         demoConnectionID = demoConnection?.id

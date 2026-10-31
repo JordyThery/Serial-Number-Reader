@@ -31,7 +31,6 @@ CREDENTIALS=("jamfpro-readonly:jamfPlatform:client-id" "jamfpro-readonly:jamfPla
              "jamfschool-readonly:jamfSchool:network-id" "jamfschool-readonly:jamfSchool:api-key"
              "jamf-test-a:jamfPlatform:client-id" "jamf-test-a:jamfPlatform:client-secret"
              "jamfpro-production:jamfPlatform:client-id" "jamfpro-production:jamfPlatform:client-secret")
-LEGACY_PREFIXES=""
 APP_FAULTS=(usb-attempt)
 DOMAIN="be.jordythery.serialnumberreader"
 # Saved connections and the one in use, the demo switch, the conversion flag

@@ -1,6 +1,7 @@
 import Foundation
 import IOKit
 import IOKit.usb
+import JTKit
 import Observation
 import os
 
@@ -57,8 +58,8 @@ final class USBDeviceMonitor {
     /// - Parameters:
     ///   - hardware: the lockdown and Configurator reads; the real ones by default.
     ///   - demo: demo mode's pretend iPhone; nil without demo mode.
-    ///   - underTest: whether this launch is under tests (`UnderTest.isActive`).
-    init(hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil, underTest: Bool = UnderTest.isActive) {
+    ///   - underTest: whether this launch is under tests (`TestRun.isActive`).
+    init(hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil, underTest: Bool = TestRun.isActive) {
         self.hardware = hardware
         self.demo = demo
         watchesRealUSB = !(underTest && hardware is LiveUSBHardware)

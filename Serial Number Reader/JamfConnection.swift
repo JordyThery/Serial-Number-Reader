@@ -64,7 +64,7 @@ final class JamfConnectionStore {
     let connections: ConnectionStore<JamfConnection>
     @ObservationIgnored private let defaults: UserDefaults
     /// Whether this is the real list: the app's settings and Keychain items.
-    /// Under tests its requests are refused (`SavedConnectionGuard`).
+    /// Under tests its requests are refused (`TestRun.refusingSession`).
     let holdsSavedConnections: Bool
 
     var activeID: UUID? {
@@ -108,12 +108,6 @@ final class JamfConnectionStore {
     )
 
     private nonisolated static let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Connections")
-
-    /// Whether the app was launched as the host of its unit tests.
-    nonisolated static var isUnitTestHost: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-            || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
-    }
 
     /// The store for the app while it hosts unit tests: an empty, throwaway
     /// settings domain and no Keychain, so running the tests never converts

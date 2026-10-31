@@ -79,17 +79,17 @@ struct JamfSchoolTests {
     @Test("Another 404 points at the URL; a failure under HTTP 200 is an error")
     func errors() async throws {
         let wrongURL = MockServer { _ in .json(404, "<html>Not Found</html>", headers: ["Content-Type": "text/html"]) }
-        let notFound = await #expect(throws: JamfSchoolError.self) { _ = try await service(wrongURL).lookup(.udid("00008130-0001")) }
-        #expect(notFound?.message().contains("Check the Jamf School address") == true)
+        let notFound = await #expect(throws: JamfSchool.APIError.self) { _ = try await service(wrongURL).lookup(.udid("00008130-0001")) }
+        #expect(notFound?.message().contains("Check the Jamf School server URL, e.g. https://yourschool.jamfcloud.com.") == true)
 
         let inBody = MockServer { _ in .json(200, #"{"code":400,"message":"Bad request"}"#) }
-        await #expect(throws: JamfSchoolError.self) { _ = try await service(inBody).lookup(.udid("00008130-0001")) }
+        await #expect(throws: JamfSchool.APIError.self) { _ = try await service(inBody).lookup(.udid("00008130-0001")) }
     }
 
     @Test("A refused API key gets JTKit's hint and the app's")
     func refusedKey() async throws {
         let server = MockServer { _ in .json(401, #"{"error":{"message":"Invalid Credentials","code":401}}"#) }
-        let error = await #expect(throws: JamfSchoolError.self) { try await service(server).testConnection() }
+        let error = await #expect(throws: JamfSchool.APIError.self) { try await service(server).testConnection() }
         let message = try #require(error?.message())
         #expect(message.contains("Check the Network ID and API key"))
         #expect(message.contains("Serial Number Reader needs the API key to read devices, and to update their details for asset tags."))

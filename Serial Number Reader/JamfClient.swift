@@ -300,7 +300,7 @@ nonisolated enum JamfService: Sendable {
     }
 
     private static func result<Record: Sendable & Hashable>(
-        _ match: JamfPro.Match<Record>, _ convert: (Record) -> JamfDeviceRecord?
+        _ match: DeviceMatch<Record>, _ convert: (Record) -> JamfDeviceRecord?
     ) throws -> JamfLookupResult {
         switch match {
         case .none:
@@ -309,20 +309,20 @@ nonisolated enum JamfService: Sendable {
             return .multipleMatches(count)
         case .one(let record):
             guard let converted = convert(record) else {
-                throw JamfPlatformError(.invalidResponse("The Jamf Pro record has no ID."))
+                throw JamfPlatform.APIError(.invalidResponse("The Jamf Pro record has no ID."))
             }
             return .found(converted)
         }
     }
 
     /// The app's hints on top of JTKit's: which Platform API permissions it needs.
-    @Sendable private static func proHints(_ error: JamfPlatformError) -> [String] {
+    @Sendable private static func proHints(_ error: JamfPlatform.APIError) -> [String] {
         guard error.status == 403, error.server == .platformAPI else { return [] }
         return ["Serial Number Reader needs the devices:read permission, and devices:update to edit asset tags."]
     }
 
     /// … and what a Jamf School API key must be allowed to do.
-    @Sendable private static func schoolHints(_ error: JamfSchoolError) -> [String] {
+    @Sendable private static func schoolHints(_ error: JamfSchool.APIError) -> [String] {
         guard error.status == 401 || error.status == 403 else { return [] }
         return ["Serial Number Reader needs the API key to read devices, and to update their details for asset tags."]
     }

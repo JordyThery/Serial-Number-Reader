@@ -191,7 +191,7 @@ struct JamfNetworkTests {
                                                   environmentID: "5E0C2A6B-1C3D-4E5F-8A9B-0C1D2E3F4A5B")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
-        let wrongEnvironment = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let wrongEnvironment = await #expect(throws: JamfPlatform.APIError.self) { try await client.testConnection() }
         let message = try #require(wrongEnvironment?.message())
         #expect(message.hasPrefix("HTTP 400 Bad Request"))
         #expect(message.contains("Trace ID: trace-77"))
@@ -199,7 +199,7 @@ struct JamfNetworkTests {
         #expect(server.requests.last?.path == "/pro/v4/computers-inventory")
 
         status.value = 403
-        let forbidden = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let forbidden = await #expect(throws: JamfPlatform.APIError.self) { try await client.testConnection() }
         #expect(forbidden?.message().contains("Serial Number Reader needs the devices:read permission, and devices:update to edit asset tags.") == true)
         #expect(forbidden?.message().contains("Check its permissions in Jamf Account.") == true)
     }
@@ -212,7 +212,7 @@ struct JamfNetworkTests {
                                                   environmentID: "5E0C2A6B-1C3D-4E5F-8A9B-0C1D2E3F4A5B")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
-        let error = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let error = await #expect(throws: JamfPlatform.APIError.self) { try await client.testConnection() }
         #expect(error?.message().contains("Check the client ID, client secret and region. Jamf Account integrations expire after six months.") == true)
     }
 
@@ -262,11 +262,11 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .basic(username: "admin", password: "pw")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
 
-        let forbidden = await #expect(throws: JamfPlatformError.self) { _ = try await client.lookup(.udid(Self.udid)) }
+        let forbidden = await #expect(throws: JamfPlatform.APIError.self) { _ = try await client.lookup(.udid(Self.udid)) }
         #expect(forbidden?.message().contains("The user account is missing the “Read Mobile Devices” privilege.") == true)
 
         signIn.value = 401
-        let wrong = await #expect(throws: JamfPlatformError.self) { try await client.testConnection() }
+        let wrong = await #expect(throws: JamfPlatform.APIError.self) { try await client.testConnection() }
         let message = try #require(wrong?.message())
         #expect(message.contains("Check the username and password."))
         #expect(!message.contains("region"))
@@ -294,7 +294,7 @@ struct JamfNetworkTests {
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
-        await #expect(throws: JamfPlatformError.self) { _ = try await client.lookup(.serialNumber("C02\"||1")) }
+        await #expect(throws: JamfPlatform.APIError.self) { _ = try await client.lookup(.serialNumber("C02\"||1")) }
         #expect(!server.requests.contains { $0.path.contains("mobile-devices") })
     }
 

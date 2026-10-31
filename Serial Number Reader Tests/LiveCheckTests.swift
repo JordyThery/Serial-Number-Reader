@@ -115,7 +115,7 @@ struct LiveFailure: Error, CustomStringConvertible {
 
 /// The note for a failed step: a missing privilege is named.
 func failure(_ error: any Error) -> String {
-    if let error = error as? JamfPlatformError, error.status == 401 || error.status == 403 {
+    if let error = error as? JamfPlatform.APIError, error.status == 401 || error.status == 403 {
         return "MISSING PRIVILEGE on the API client's role: \(error.localizedDescription)"
     }
     return "\(error)"
@@ -129,11 +129,11 @@ func masked(_ text: String, serial: String) -> String {
 /// The two "under tests" checks, recorded as steps; any attempt fails the run.
 @MainActor
 func checkUnderTest(_ run: LiveCheckRun, when: String) {
-    let usb = AttemptLog.usb.attempts()
+    let usb = TestRun.AttemptLog.usb.attempts()
     run.record(step: "no USB action or cfgutil under tests (\(when))", passed: usb.isEmpty,
                note: usb.isEmpty ? nil : "\(usb.count) refused: " + usb.map { "\($0.what) (\($0.process))" }.joined(separator: "; "))
     #expect(usb.isEmpty, "USB attempts under tests: \(usb.map(\.what))")
-    let saved = AttemptLog.savedConnections.attempts()
+    let saved = TestRun.AttemptLog.savedConnections.attempts()
     run.record(step: "no request to a saved connection under tests (\(when))", passed: saved.isEmpty,
                note: saved.isEmpty ? nil : "\(saved.count) refused: " + saved.map { "\($0.what) (\($0.process))" }.joined(separator: "; "))
     #expect(saved.isEmpty, "Requests to saved connections under tests: \(saved.map(\.what))")
@@ -251,9 +251,12 @@ struct TestDevices {
         return (record?.general?.assetTag, record?.general != nil, classic)
     }
 
-    /// What the Jamf Pro API returns for the record: field names and kinds
-    /// only (a diagnostic; the record's values are all made up anyway).
-    func shape(serial: String, id: String) async throws -> String {
+    /// What Jamf's device list (the read JTKit's lookup starts from, General
+    /// and Hardware sections only) returns for the record: field names and
+    /// kinds only (a diagnostic; the record's values are all made up anyway).
+    /// How JTKit completes a never-enrolled record is JTKit's own and isn't
+    /// repeated here; the read-back note shows what came of it.
+    func shape(serial: String) async throws -> String {
         func describe(_ json: LosslessJSON?) -> String {
             guard let json else { return "missing" }
             if let object = json.objectValue { return "{" + object.keys.joined(separator: ",") + "}" }
@@ -266,9 +269,7 @@ struct TestDevices {
             URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\""),
         ], privilege: .readMobileDevices)
         let first = list["results"]?.arrayValue?.first
-        let single = try? await client.json("pro/v2/mobile-devices/\(id)/detail", privilege: .readMobileDevices)
-        return "list: \(describe(first)), deviceType \(first?["deviceType"]?.stringValue ?? "none"), general \(describe(first?["general"])); "
-            + "by id: \(describe(single))"
+        return "list: \(describe(first)), deviceType \(first?["deviceType"]?.stringValue ?? "none"), general \(describe(first?["general"]))"
     }
 
     func delete(id: String) async throws {
@@ -574,7 +575,7 @@ struct LiveLookupTests {
             try await Task.sleep(for: .seconds(3))
         }
         if stored.pro != tag {
-            let shape = (try? await devices.shape(serial: serial, id: deviceID)) ?? "unreadable"
+            let shape = (try? await devices.shape(serial: serial)) ?? "unreadable"
             run.record(step: step("diagnostic: the record in the Jamf Pro API"), passed: false, note: shape)
         }
         run.record(step: step("read the asset tag back"), passed: stored.pro == tag,

@@ -6,8 +6,8 @@ import Testing
 
 /// A refusing guard writing to a file of the test's own, so these tests never
 /// add to the attempts the release check reads.
-private func temporaryLog() -> AttemptLog {
-    AttemptLog(fileURL: FileManager.default.temporaryDirectory
+private func temporaryLog() -> TestRun.AttemptLog {
+    TestRun.AttemptLog(fileURL: FileManager.default.temporaryDirectory
         .appending(path: "snr-under-test-\(UUID().uuidString)/attempts.jsonl"))
 }
 
@@ -20,7 +20,7 @@ struct UnderTestTests {
 
     @Test("The unit-test host counts as under tests")
     func hostIsUnderTest() {
-        #expect(UnderTest.isActive)
+        #expect(TestRun.isActive)
         #expect(USBGuard.shared.isActive)
     }
 
@@ -94,10 +94,13 @@ struct UnderTestTests {
     func savedConnectionRequestsAreRefused() async throws {
         let log = temporaryLog()
         defer { try? FileManager.default.removeItem(at: log.fileURL.deletingLastPathComponent()) }
-        let session = SavedConnectionGuard.refusingSession(log: log)
+        let session = TestRun.refusingSession(log: log, message: UnderTest.refusal)
         var request = URLRequest(url: URL(string: "https://example.jamfcloud.com/api/v2/mobile-devices/detail?filter=serialNumber%3D%3D%22PLACEHOLDER1%22")!)
         request.httpMethod = "GET"
-        await #expect(throws: (any Error).self) { _ = try await session.data(for: request) }
+        let error = await #expect(throws: URLError.self) { _ = try await session.data(for: request) }
+        // No answer, never a cancellation.
+        #expect(error?.code == .resourceUnavailable)
+        #expect(error?.localizedDescription == UnderTest.refusal)
         #expect(log.attempts().map(\.what) == ["GET example.jamfcloud.com/api/v2/mobile-devices/detail"])
     }
 

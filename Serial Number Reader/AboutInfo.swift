@@ -26,7 +26,7 @@ extension Acknowledgement {
             AboutLink("AsahiLinux/macvdmtool", address: "https://github.com/AsahiLinux/macvdmtool"),
             AboutLink("osy/ThunderboltPatcher", address: "https://github.com/osy/ThunderboltPatcher"),
         ].compactMap { $0 },
-        licence: """
+        license: """
                                              Apache License
                                        Version 2.0, January 2004
                                     http://www.apache.org/licenses/

@@ -13,7 +13,7 @@ enum AppDemo {
     /// earlier run can't turn demo mode on for this one. A sandbox run saves
     /// nothing (JTKit).
     private static var defaults: UserDefaults {
-        guard JamfConnectionStore.isUnitTestHost else { return .standard }
+        guard TestRun.isUnitTestHost else { return .standard }
         return JamfConnectionStore.emptiedDefaults(domain: JamfConnectionStore.unitTestHostDomain)
     }
 
@@ -21,16 +21,8 @@ enum AppDemo {
     /// YES`, UI tests) an empty list in memory and no Keychain, so the real
     /// ones are never read or written.
     static func connections() -> JamfConnectionStore {
-        if JamfConnectionStore.isUnitTestHost { return .forUnitTestHost() }
-        if isSandboxLaunch { return JamfConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore()) }
+        if TestRun.isUnitTestHost { return .forUnitTestHost() }
+        if DemoMode.isSandboxLaunch { return JamfConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore()) }
         return JamfConnectionStore()
-    }
-
-    /// Started with `-JTKitSandbox YES`: no update check and no ipsw.me lookups.
-    nonisolated static var isSandboxLaunch: Bool {
-        let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.lastIndex(of: DemoMode.sandboxArgument), arguments.indices.contains(index + 1)
-        else { return false }
-        return ["yes", "true", "1"].contains(arguments[index + 1].lowercased())
     }
 }

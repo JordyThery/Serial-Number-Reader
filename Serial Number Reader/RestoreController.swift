@@ -285,7 +285,7 @@ nonisolated enum FirmwareSigning {
     private static func fetch<T: Decodable>(_ url: URL) async -> T? {
         // Under tests (the unit-test host, a sandbox run) no public lookups:
         // the answer is "unknown".
-        guard !UnderTest.isActive else { return nil }
+        guard !TestRun.isActive else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         guard let (data, response) = try? await URLSession.shared.data(for: request),
