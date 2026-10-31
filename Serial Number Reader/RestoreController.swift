@@ -58,7 +58,7 @@ final class RestoreController {
               let have = Configurator.normalizedECID(ecid),
               wanted == have, device.connectedAt >= job.startedAt
         else { return nil }
-        // Recovery/DFU stages stay labelled until the banner is dismissed; a
+        // Recovery/DFU stages stay labeled until the banner is dismissed; a
         // booted row only while running — afterwards it's the restored device.
         return device.mode != .normal || job.state == .running ? job.kind : nil
     }
@@ -70,6 +70,8 @@ final class RestoreController {
     private let run: @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
     /// Demo mode's pretend iPhone; nil without demo mode.
     private let demo: DemoUSB?
+    /// The app's USB actions: no job starts while one runs.
+    weak var actions: DeviceActionController?
 
     init(activityLog: ActivityLog? = nil, demo: DemoUSB? = nil,
          run: @escaping @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
@@ -95,12 +97,14 @@ final class RestoreController {
             refusal = "Another restore or revive is still running. Wait until it finishes, then try again."
             return nil
         }
+        guard actions?.runningAction == nil else {
+            refusal = "Another USB action is still running. Wait until it finishes, then try again."
+            return nil
+        }
         let simulated = demo?.isOn == true
         guard simulated == PretendIPhone.isPretend(ecid: ecid) else {
             logger.error("Restore refused: \(simulated ? "a real device in Demo Mode" : "the pretend iPhone outside Demo Mode", privacy: .public)")
-            refusal = simulated
-                ? "Demo Mode is on, so only the pretend iPhone can be restored. Turn off Demo Mode to restore this device."
-                : "The pretend iPhone can only be restored in Demo Mode."
+            refusal = simulated ? PretendIPhone.realDeviceRefusal : PretendIPhone.refusal
             return nil
         }
         refusal = nil
@@ -207,6 +211,17 @@ nonisolated struct IPSWInfo: Equatable, Sendable {
         supportedProductTypes.contains(productType)
     }
 
+    /// Why this IPSW can't be used for the device, or nil when it supports
+    /// it. With the model unknown nothing can be checked, so it's refused:
+    /// the IPSW is checked before anything is erased, never left to cfgutil.
+    func refusal(productType: String?, deviceName: String) -> String? {
+        guard let productType else {
+            return "The model of this device is unknown, so the IPSW couldn’t be checked. Use the latest available version instead."
+        }
+        guard supports(productType) else { return "This IPSW doesn’t support \(deviceName) (\(productType))." }
+        return nil
+    }
+
     /// Parses BuildManifest.plist.
     static func parse(manifest: [String: Any]) -> IPSWInfo? {
         guard let version = manifest["ProductVersion"] as? String,
@@ -234,7 +249,7 @@ nonisolated struct IPSWInfo: Equatable, Sendable {
         guard process.terminationStatus == 0,
               let manifest = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let info = parse(manifest: manifest)
-        else { throw Configurator.Failure(message: "This file isn't a readable IPSW.") }
+        else { throw Configurator.Failure(message: "This file isn’t a readable IPSW.") }
         return info
     }
 }

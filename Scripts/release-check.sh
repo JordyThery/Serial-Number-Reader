@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Serial Number Reader's release check (JTKit ROADMAP step 11). Claude runs it
+# Serial Number Reader's release check. Claude runs it
 # unattended with nohup; the report lands in
 # ~/Library/Application Support/JTKit Release Check/runs/.
 #   Scripts/release-check.sh [--local-jtkit] [--tenants] [--include-production] [--stop-before-live]
@@ -26,7 +26,7 @@ LIVE_TESTS=("Serial Number Reader Tests/LiveLookupTests/readOnlyLookups()"
 CLEANUP_TEST="Serial Number Reader Tests/LiveCleanupTests"
 ROLES=(jamfpro-readonly jamfschool-readonly jamf-test-a jamfpro-production)
 # role:service:item, read from the Keychain service the allow-list names.
-# jamfpro-production's are read only with --include-production (JTKit 0.12.3).
+# jamfpro-production's are read only with --include-production.
 CREDENTIALS=("jamfpro-readonly:jamfPlatform:client-id" "jamfpro-readonly:jamfPlatform:client-secret"
              "jamfschool-readonly:jamfSchool:network-id" "jamfschool-readonly:jamfSchool:api-key"
              "jamf-test-a:jamfPlatform:client-id" "jamf-test-a:jamfPlatform:client-secret"

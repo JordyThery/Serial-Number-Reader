@@ -39,7 +39,8 @@ nonisolated enum SessionExport {
         row.model = device.modelDisplayName
         row.modelIdentifier = device.modelInfo?.identifier ?? ""
         row.deviceName = device.lockdownInfo?.deviceName ?? ""
-        row.udid = device.udid ?? ""
+        // The UDID the detail view shows: also from Configurator, or derived (DFU).
+        row.udid = device.displayUDID ?? ""
         row.ecid = device.ecid ?? ""
 
         var record: JamfDeviceRecord?
@@ -47,7 +48,7 @@ nonisolated enum SessionExport {
         case .found(let found):
             record = found
             row.jamfStatus = "Found"
-        case .notConfigured: row.jamfStatus = "Not configured"
+        case .notConfigured: row.jamfStatus = "No connection"
         case .unavailable: row.jamfStatus = "Not available"
         case .loading: row.jamfStatus = "Pending"
         case .noMatch: row.jamfStatus = "No match"
@@ -131,7 +132,7 @@ extension SessionExport {
             try csvData(rows).write(to: url, options: .atomic)
         } catch {
             let alert = NSAlert(error: error)
-            alert.messageText = "The session couldn't be exported."
+            alert.messageText = "The session couldn’t be exported."
             alert.runModal()
         }
     }

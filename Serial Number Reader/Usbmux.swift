@@ -49,9 +49,11 @@ nonisolated struct LockdownDeviceInfo: Equatable, Sendable {
 /// Recovery mode.
 ///
 /// Protocol: connect to the `usbmuxd` Unix socket, list attached devices, open
-/// a tunnel to the device's lockdownd (port 62078), and send one request. No
-/// pairing session is started, so no trust or privileges are required — the
-/// same mechanism `ideviceinfo -s` and `ideviceenterrecovery` use.
+/// a tunnel to the device's lockdownd (port 62078), and send one request,
+/// the same mechanism `ideviceinfo -s` and `ideviceenterrecovery` use. The
+/// reads need no pairing and no privileges. Enter Recovery tries without a
+/// pairing first; iOS 27 only accepts it in a session over the pairing the
+/// Mac already holds (it never asks for trust itself).
 nonisolated enum Usbmux {
 
     enum Failure: LocalizedError {
@@ -66,11 +68,11 @@ nonisolated enum Usbmux {
 
         var errorDescription: String? {
             switch self {
-            case .socketError(let detail): "Couldn't reach usbmuxd: \(detail)"
-            case .deviceNotFound: "The device is not visible to usbmuxd — is it still connected and unlocked at least once since boot?"
-            case .protocolError(let detail): "Unexpected usbmuxd reply: \(detail)"
-            case .lockdownError(let detail): "The device refused: \(detail)"
-            case .tlsError(let detail): "The trusted connection failed: \(detail)"
+            case .socketError(let detail): "Couldn’t reach usbmuxd: \(detail)."
+            case .deviceNotFound: "The device isn’t visible to usbmuxd. Check that it’s connected and has been unlocked once since it started."
+            case .protocolError(let detail): "The device sent an unexpected reply (\(detail))."
+            case .lockdownError(let detail): "The device refused the request (\(detail))."
+            case .tlsError(let detail): "The trusted connection failed: \(detail)."
             case .trustRequired: "This device only accepts Enter Recovery from a Mac it trusts."
             }
         }
@@ -133,7 +135,9 @@ nonisolated enum Usbmux {
             if (session["EnableSessionSSL"] as? Bool) == true {
                 let tls: LockdownTLS
                 do {
-                    tls = try LockdownTLS(socket: connection.fd, certificatePEM: certificate, privateKeyPEM: privateKey)
+                    tls = try LockdownTLS(socket: connection.fd, certificatePEM: certificate, privateKeyPEM: privateKey,
+                                          deviceCertificatePEM: record["DeviceCertificate"] as? Data,
+                                          rootCertificatePEM: record["RootCertificate"] as? Data)
                 } catch {
                     throw Failure.tlsError(error.localizedDescription)
                 }
@@ -145,7 +149,7 @@ nonisolated enum Usbmux {
         }
     }
 
-    private static func sendEnterRecovery(over channel: LockdownChannel) throws {
+    static func sendEnterRecovery(over channel: LockdownChannel) throws {
         try lockdownSend(channel, [
             "Label": "SerialNumberReader",
             "Request": "EnterRecovery",
@@ -155,7 +159,7 @@ nonisolated enum Usbmux {
             throw Failure.lockdownError(error)
         }
         guard (reply["Request"] as? String) == "EnterRecovery" else {
-            throw Failure.protocolError("unexpected lockdown reply: \(reply)")
+            throw Failure.protocolError(summary(of: reply))
         }
     }
 
@@ -217,7 +221,7 @@ nonisolated enum Usbmux {
             "ProgName": "Serial Number Reader",
         ])
         guard (connectReply["Number"] as? Int) == 0 else {
-            throw Failure.protocolError("Connect failed: \(connectReply)")
+            throw Failure.protocolError("Connect: \(summary(of: connectReply))")
         }
 
         // 3. From here the socket is a raw pipe to lockdownd.
@@ -238,8 +242,15 @@ nonisolated enum Usbmux {
             "kLibUSBMuxVersion": 3,
         ])
         guard let deviceList = listReply["DeviceList"] as? [[String: Any]] else {
-            throw Failure.protocolError("no DeviceList in reply")
+            throw Failure.protocolError("no device list")
         }
+        guard let match = device(in: deviceList, udid: udid) else { throw Failure.deviceNotFound }
+        return match
+    }
+
+    /// The USB entry of usbmuxd's device list with this UDID, ignoring case
+    /// and hyphens; Wi-Fi entries of the same device are skipped.
+    static func device(in deviceList: [[String: Any]], udid: String) -> (deviceID: Int, serial: String)? {
         let wanted = normalized(udid)
         for entry in deviceList {
             guard let props = entry["Properties"] as? [String: Any],
@@ -250,7 +261,17 @@ nonisolated enum Usbmux {
             else { continue }
             return (deviceID, serial)
         }
-        throw Failure.deviceNotFound
+        return nil
+    }
+
+    /// Only a reply's request name, error and result code: the whole reply
+    /// can hold the device's identifiers, and becomes on-screen text and an
+    /// activity log note.
+    static func summary(of reply: [String: Any]) -> String {
+        let parts = ["Request", "Error", "Number"].compactMap { key in
+            reply[key].map { "\(key) \($0)" }
+        }
+        return parts.isEmpty ? "no request, error or result code" : parts.joined(separator: ", ")
     }
 
     // MARK: - Socket plumbing
@@ -314,19 +335,33 @@ nonisolated enum Usbmux {
     // MARK: - usbmux framing (16-byte little-endian header + XML plist)
 
     private static func muxRequest(_ fd: Int32, tag: UInt32, payload: [String: Any]) throws -> [String: Any] {
+        try writeAll(fd, muxPacket(payload, tag: tag))
+        let header = try readExactly(fd, 16)
+        return try muxReply(body: readExactly(fd, muxBodyLength(header: header)))
+    }
+
+    /// A usbmuxd request: the 16-byte header (length, version 1, type 8 for
+    /// a plist, tag) and the XML plist.
+    static func muxPacket(_ payload: [String: Any], tag: UInt32) throws -> Data {
         let plist = try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
         var packet = Data()
         for value: UInt32 in [UInt32(plist.count + 16), 1 /* version */, 8 /* plist */, tag] {
             withUnsafeBytes(of: value.littleEndian) { packet.append(contentsOf: $0) }
         }
         packet.append(plist)
-        try writeAll(fd, packet)
+        return packet
+    }
 
-        let header = try readExactly(fd, 16)
+    /// How many bytes follow a usbmuxd reply's 16-byte header.
+    static func muxBodyLength(header: Data) throws -> Int {
+        guard header.count == 16 else { throw Failure.protocolError("short header") }
         let length = header.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) }.littleEndian
         guard length >= 16, length < 1 << 24 else { throw Failure.protocolError("bad packet length") }
-        let body = try readExactly(fd, Int(length) - 16)
-        guard let reply = try PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
+        return Int(length) - 16
+    }
+
+    static func muxReply(body: Data) throws -> [String: Any] {
+        guard let reply = try? PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
             throw Failure.protocolError("non-plist reply")
         }
         return reply
@@ -336,7 +371,7 @@ nonisolated enum Usbmux {
 
     /// Where lockdown messages travel: the plain socket, or TLS on the same
     /// socket once a paired session has been started.
-    private protocol LockdownChannel {
+    protocol LockdownChannel {
         func write(_ data: Data) throws
         func read(_ count: Int) throws -> Data
     }
@@ -357,7 +392,7 @@ nonisolated enum Usbmux {
         }
     }
 
-    private static func lockdownSend(_ channel: LockdownChannel, _ payload: [String: Any]) throws {
+    static func lockdownSend(_ channel: LockdownChannel, _ payload: [String: Any]) throws {
         let plist = try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
         var packet = Data()
         withUnsafeBytes(of: UInt32(plist.count).bigEndian) { packet.append(contentsOf: $0) }
@@ -365,12 +400,12 @@ nonisolated enum Usbmux {
         try channel.write(packet)
     }
 
-    private static func lockdownReceive(_ channel: LockdownChannel) throws -> [String: Any] {
+    static func lockdownReceive(_ channel: LockdownChannel) throws -> [String: Any] {
         let lengthData = try channel.read(4)
         let length = lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.bigEndian
         guard length > 0, length < 1 << 24 else { throw Failure.protocolError("bad lockdown length") }
         let body = try channel.read(Int(length))
-        guard let reply = try PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
+        guard let reply = try? PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] else {
             throw Failure.protocolError("non-plist lockdown reply")
         }
         return reply

@@ -14,6 +14,11 @@ NS_ASSUME_NONNULL_BEGIN
                   toRegistryEntryID:(uint64_t)entryID
     NS_SWIFT_NAME(send(_:toRegistryEntryID:));
 
+/// Whether a send error on this command still means it was sent: true for
+/// `reboot`, which detaches the device mid-request. The earlier commands
+/// stay strict.
++ (BOOL)failureMeansSent:(NSString *)command NS_SWIFT_NAME(failureMeansSent(_:));
+
 @end
 
 NS_ASSUME_NONNULL_END

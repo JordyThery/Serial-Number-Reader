@@ -8,7 +8,7 @@ struct DescriptorParserTests {
 
     @Test("Recovery descriptor with bracketed SRNM and IMEI")
     func recoveryDescriptor() {
-        let raw = "CPID:8110 CPRV:11 CPFM:03 SCEP:01 BDID:0C ECID:001A2B3C4D5E6F70 IBFL:3C SRNM:[F2LXK1ABCD6M] IMEI:[356728111234567]"
+        let raw = "CPID:8110 CPRV:11 CPFM:03 SCEP:01 BDID:0C ECID:001A2B3C4D5E6F70 IBFL:3C SRNM:[PLACEHOLDR03] IMEI:[000000000000001]"
         let parsed = DescriptorParser.parse(raw)
 
         #expect(parsed.fields.count == 9)
@@ -16,8 +16,8 @@ struct DescriptorParserTests {
         #expect(parsed.bdid == "0C")
         #expect(parsed.ecid == "001A2B3C4D5E6F70")
         // Brackets must be stripped.
-        #expect(parsed.serialNumber == "F2LXK1ABCD6M")
-        #expect(parsed.imei == "356728111234567")
+        #expect(parsed.serialNumber == "PLACEHOLDR03")
+        #expect(parsed["IMEI"] == "000000000000001")
         // Raw access and order preservation.
         #expect(parsed["CPRV"] == "11")
         #expect(parsed.fields.first?.key == "CPID")
@@ -26,8 +26,8 @@ struct DescriptorParserTests {
 
     @Test("Unbracketed SRNM is also accepted")
     func unbracketedSerial() {
-        let parsed = DescriptorParser.parse("CPID:8030 BDID:04 SRNM:C8QZX0LMN72J")
-        #expect(parsed.serialNumber == "C8QZX0LMN72J")
+        let parsed = DescriptorParser.parse("CPID:8030 BDID:04 SRNM:PLACEHOLDR04")
+        #expect(parsed.serialNumber == "PLACEHOLDR04")
     }
 
     // MARK: DFU mode
@@ -41,7 +41,7 @@ struct DescriptorParserTests {
         #expect(parsed.cpid == "8110")
         #expect(parsed.bdid == "0C")
         #expect(parsed.ecid == "001A2B3C4D5E6F70")
-        #expect(parsed.bootTag == "iBoot-8419.0.0.100.5")
+        #expect(parsed["SRTG"] == "iBoot-8419.0.0.100.5")
     }
 
     // MARK: Missing / malformed SRNM
@@ -58,7 +58,7 @@ struct DescriptorParserTests {
         let parsed = DescriptorParser.parse("CPID:8015 BDID:02 SRNM:[] IMEI:[]")
         #expect(parsed["SRNM"] == "")       // field is present…
         #expect(parsed.serialNumber == nil) // …but the serial accessor treats it as missing
-        #expect(parsed.imei == nil)
+        #expect(parsed["IMEI"] == "")
     }
 
     @Test("Garbage input produces no fields")
@@ -68,7 +68,7 @@ struct DescriptorParserTests {
     }
 }
 
-@Suite("UDID normalisation")
+@Suite("UDID normalization")
 struct UDIDNormalizationTests {
 
     @Test("24-hex-char UDID gets the 8-4 hyphen and uppercase")
@@ -91,7 +91,7 @@ struct UDIDNormalizationTests {
 
     @Test("Non-UDID strings are rejected")
     func invalidUDID() {
-        #expect(DescriptorParser.normalizedUDID("F2LXK1ABCD6M") == nil)   // a serial number
+        #expect(DescriptorParser.normalizedUDID("PLACEHOLDR03") == nil)   // a serial number
         #expect(DescriptorParser.normalizedUDID("") == nil)
         #expect(DescriptorParser.normalizedUDID("zz008110001a2b3c4d5e6f70") == nil)
     }

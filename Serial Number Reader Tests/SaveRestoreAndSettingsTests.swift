@@ -40,8 +40,8 @@ nonisolated final class AssetTagServer: @unchecked Sendable {
 }
 
 @MainActor
-@Suite("Fixes for what the release check found")
-struct FindingsFixesTests {
+@Suite("Asset-tag saves, refused restores, demo lookups and test settings")
+struct SaveRestoreAndSettingsTests {
     /// A store with one saved Jamf School connection (in memory) on `server`.
     private func store(_ server: MockServer, settings: TemporaryDefaults) throws -> JamfStore {
         let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
@@ -64,7 +64,7 @@ struct FindingsFixesTests {
     @Test("After a save the app shows the asset tag Jamf stored, not what was typed")
     func showsStoredAssetTag() async throws {
         let fake = AssetTagServer()
-        let settings = TemporaryDefaults("findings")
+        let settings = TemporaryDefaults("saves")
         defer { settings.remove() }
         let store = try store(fake.server, settings: settings)
         let device = LiveDevice.recovery(serial: AssetTagServer.serial)
@@ -80,7 +80,7 @@ struct FindingsFixesTests {
     @Test("A save that finishes after switching connections doesn't land in the new connection's list")
     func saveDuringSwitch() async throws {
         let fake = AssetTagServer(holdsSaves: true)
-        let settings = TemporaryDefaults("findings")
+        let settings = TemporaryDefaults("saves")
         defer { settings.remove() }
         let store = try store(fake.server, settings: settings)
         let device = LiveDevice.recovery(serial: AssetTagServer.serial)
@@ -136,7 +136,7 @@ struct FindingsFixesTests {
 
     @Test("A demo switch left on in the test host's settings is emptied before it's read")
     func staleDemoSwitchIsEmptied() {
-        let settings = TemporaryDefaults("findings")
+        let settings = TemporaryDefaults("saves")
         defer { settings.remove() }
         settings.defaults.set(true, forKey: "demoMode")
         let emptied = JamfConnectionStore.emptiedDefaults(domain: settings.domain)
@@ -148,7 +148,7 @@ struct FindingsFixesTests {
 
     @Test("A test's settings stay out of ~/Library/Preferences, also a moment after they're removed")
     func temporarySettingsLeaveNoFile() async {
-        let settings = TemporaryDefaults("findings")
+        let settings = TemporaryDefaults("saves")
         settings.defaults.set("x", forKey: "k")
         settings.defaults.synchronize()
         #expect(settings.defaults.string(forKey: "k") == "x")

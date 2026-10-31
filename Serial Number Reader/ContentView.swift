@@ -19,9 +19,9 @@ struct ContentView: View {
             Group {
                 if monitor.devices.isEmpty {
                     ContentUnavailableView {
-                        Label("Connect an iPhone or iPad via USB", systemImage: "cable.connector")
+                        Label("Connect an iPhone, iPad or Mac over USB", systemImage: "cable.connector")
                     } description: {
-                        Text("Devices in Normal, Recovery and DFU mode are detected automatically — including devices that won't boot.")
+                        Text("Devices in Normal, Recovery and DFU mode are detected automatically — including devices that won’t boot.")
                     } actions: {
                         if let demo = monitor.demo?.mode, !demo.isOn {
                             Button("Try \(DemoMode.title)") { demo.isOn = true }
@@ -73,7 +73,7 @@ struct ContentView: View {
                         "No Device Selected",
                         systemImage: "sidebar.left",
                         description: Text(monitor.devices.isEmpty
-                            ? "Connect an iPhone or iPad via USB."
+                            ? "Connect an iPhone, iPad or Mac over USB."
                             : "Select a device from the list.")
                     )
                 }
@@ -217,16 +217,8 @@ struct DeviceRow: View {
         let serialComesFromJamf = device.mode == .normal || (device.mode == .dfu && device.jamfQuery != nil)
         guard serialComesFromJamf else { return device.serialStatusText }
         // A booted device's serial can only come from Jamf — be precise
-        // about why it isn't available.
-        switch jamfState {
-        case .notConfigured: return "Serial requires Jamf (not configured)"
-        case .noMatch: return "Serial unknown — no Jamf match"
-        case .multipleMatches: return "Serial ambiguous — multiple Jamf matches"
-        case .failed: return "Serial unavailable — Jamf lookup failed"
-        case .unavailable: return "Serial unavailable — no UDID reported"
-        case .found: return "Serial not present in the Jamf record"
-        case .loading: return "Serial pending Jamf lookup"
-        }
+        // about why it isn't available, in the detail view's words.
+        return jamfState.serialUnavailableText
     }
 
     private var connectionTooltip: String {
@@ -237,7 +229,7 @@ struct DeviceRow: View {
 
     private var jamfStatusLine: String {
         switch jamfState {
-        case .notConfigured: "Jamf: not configured (see Settings)"
+        case .notConfigured: "Jamf: no connection"
         case .unavailable(let reason): "Jamf: \(reason)"
         case .loading: "Jamf: looking up…"
         case .found(let record): "Jamf: \(record.name ?? "matched") · \(record.managed == true ? "Managed" : "Unmanaged")"
@@ -296,7 +288,7 @@ struct ModeBadge: View {
 }
 
 #Preview {
-    ContentView(monitor: USBDeviceMonitor(), jamf: JamfStore(), actions: DeviceActionController(),
-                restore: RestoreController())
+    // Never the real devices or the saved connections: the preview shows demo mode.
+    ContentView(monitor: .preview, jamf: .preview, actions: .preview, restore: .preview)
         .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }

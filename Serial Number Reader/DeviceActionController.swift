@@ -6,18 +6,22 @@ import os
 ///
 /// - **Restart / Enter DFU** — USB-PD vendor-defined messages via the private
 ///   AppleHPM port-controller interface. Requires root, so the app re-launches
-///   its own executable with `--vdm <action>` through an administrator prompt.
-///   The command targets the first port with a connected device, so the UI
-///   only offers it while a single device is attached.
+///   its own executable with `--vdm <action>` through an administrator prompt,
+///   after checking that the executable on disk is the signed app that runs.
+///   The command targets a port, not a device: the UI only offers it while a
+///   single device is attached, and the root helper refuses when more than
+///   one USB-C port has something connected.
 /// - **Enter Recovery** — lockdownd `EnterRecovery` over usbmuxd for a booted
-///   device. No privileges required.
+///   device. No privileges required; on iOS 27 and later only over the
+///   pairing of a Mac the device already trusts.
 /// - **Boot to Normal** — iBoot `setenv auto-boot true` + `reboot` over USB
 ///   control requests for a Recovery-mode device. No privileges required.
 /// - **Remove Trust** — removes this Mac's pairing with a booted device
 ///   through Apple Configurator.
 ///
 /// A single instance is shared app-wide so only one action runs at a time —
-/// the VDM path operates on ports, not on a specific selected device.
+/// the VDM path operates on ports, not on a specific selected device — and
+/// none while a Restore or Revive runs (`restore`).
 ///
 /// Each action that ran writes an "Action" entry to the activity log, done or
 /// failed, with the device's serial number, UDID and ECID for the masked
@@ -59,7 +63,7 @@ final class DeviceActionController {
 
     /// The device an action is for, as the activity log names it.
     struct Target: Equatable, Sendable {
-        /// e.g. "iPad Air (F9FXK2Q3HGMN)".
+        /// e.g. "iPad Air (PLACEHOLDR01)".
         let name: String
         /// Serial number, UDID and ECID, masked in the bug-report export.
         let identifiers: [String]
@@ -97,6 +101,9 @@ final class DeviceActionController {
         }
     }
 
+    /// The app's Restore and Revive: no action starts while one runs.
+    weak var restore: RestoreController?
+
     /// Where "Action" entries go; nil records nothing (previews).
     private let activityLog: ActivityLog?
     /// The real devices: lockdown, iBoot, the VDMs and Apple Configurator.
@@ -111,17 +118,36 @@ final class DeviceActionController {
     /// - Parameters:
     ///   - hardware: the real devices; a fake in tests.
     ///   - demo: demo mode's pretend iPhone; nil without demo mode.
-    init(activityLog: ActivityLog? = nil, hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil) {
+    ///   - now: the clock for how long the Apple Configurator check is kept; a fake in tests.
+    init(activityLog: ActivityLog? = nil, hardware: any USBHardware = LiveUSBHardware(), demo: DemoUSB? = nil,
+         now: @escaping () -> Date = { .now }) {
         self.activityLog = activityLog
         self.hardware = hardware
         self.demo = demo
+        self.now = now
     }
 
     /// Whether Restore, Revive and Remove Trust can run: Apple Configurator
-    /// is installed, or demo mode simulates it.
+    /// is installed, or demo mode simulates it. The disk is checked at most
+    /// every few seconds, not on every redraw of the Power section.
     var isConfiguratorAvailable: Bool {
-        demo?.isOn == true || hardware.isConfiguratorAvailable
+        if demo?.isOn == true { return true }
+        if let cached = configuratorCheck, now().timeIntervalSince(cached.at) < Self.configuratorCheckLifetime {
+            return cached.available
+        }
+        let available = hardware.isConfiguratorAvailable
+        configuratorCheck = (available, now())
+        return available
     }
+
+    nonisolated static let configuratorCheckLifetime: TimeInterval = 5
+    @ObservationIgnored private var configuratorCheck: (available: Bool, at: Date)?
+    @ObservationIgnored private let now: () -> Date
+
+    /// The message when an action is refused because a Restore or Revive runs.
+    nonisolated static let restoreRunning = "A restore or revive is running. Wait until it finishes, then try again."
+    /// The message when a device reported no UDID (sidebar, detail and actions).
+    nonisolated static let noUDID = "The device reported no UDID."
 
     /// Where an action for `device` goes: the pretend iPhone while demo mode
     /// is on, the hardware otherwise. Nil, with the reason shown, when the
@@ -132,7 +158,7 @@ final class DeviceActionController {
         let isPretend = PretendIPhone.isPretend(device)
         if let demo, demo.isOn {
             if isPretend { return (demo, true) }
-            lastError = "Demo Mode is on, so real devices aren’t used. Turn off Demo Mode first."
+            lastError = PretendIPhone.realDeviceRefusal
             return (nil, false)
         }
         if isPretend {
@@ -166,7 +192,7 @@ final class DeviceActionController {
     /// unpaired where allowed, otherwise over the Mac's trusted connection.
     func enterRecovery(device: USBDevice) {
         guard let udid = device.udid else {
-            lastError = "No UDID available for this device."
+            lastError = Self.noUDID
             return
         }
         let route = simulator(for: device)
@@ -203,7 +229,7 @@ final class DeviceActionController {
     /// sides, through Apple Configurator. `onSuccess` runs on the main actor.
     func removeTrust(device: USBDevice, onSuccess: @escaping @MainActor () -> Void) {
         guard let ecid = device.configuratorECID else {
-            lastError = "This device's ECID is unknown, so its trust can't be removed here."
+            lastError = "This device’s ECID is unknown, so its trust can’t be removed here."
             return
         }
         let route = simulator(for: device)
@@ -227,7 +253,8 @@ final class DeviceActionController {
                work: @escaping @Sendable () throws -> Outcome) -> Task<Void, Never>? {
         perform(action, for: target, simulated: false, onSuccess: onSuccess) {
             do {
-                return try await Task.detached(priority: .userInitiated) { try work() }.value
+                // Its own threads: the work blocks (sockets, USB, the password prompt).
+                return try await BlockingWork.run(work)
             } catch {
                 return .failed(error.localizedDescription)
             }
@@ -247,6 +274,10 @@ final class DeviceActionController {
     private func perform(_ action: Action, for target: Target, simulated: Bool, onSuccess: (@MainActor () -> Void)?,
                          work: @escaping @MainActor () async -> Outcome) -> Task<Void, Never>? {
         guard runningAction == nil else { return nil }
+        if restore?.isRunning == true {
+            lastError = Self.restoreRunning
+            return nil
+        }
         runningAction = action
         lastError = nil
         trustRequiredDeviceID = nil
@@ -298,50 +329,70 @@ final class DeviceActionController {
         }
     }
 
-    private enum RunResult: Sendable {
+    nonisolated enum RunResult: Sendable, Equatable {
         case success
         case cancelled
         case failure(String)
     }
 
     /// Uses `osascript … with administrator privileges` to run our own binary
-    /// as root with `--vdm <action>`. A single OS password prompt authorises it.
+    /// as root with `--vdm <action>`. A single OS password prompt authorizes it.
+    /// Before the prompt, the executable on disk must be the signed app that
+    /// is running: a swapped binary is never run as root.
     private nonisolated static func executeViaAppleScript(_ action: String) -> RunResult {
         // Second safeguard behind LiveUSBHardware: no administrator prompt, no VDM under tests.
         if let refusal = USBGuard.shared.refusal(for: "administrator prompt for --vdm \(action)") { return .failure(refusal) }
-        let executablePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        guard let executablePath = Bundle.main.executablePath else { return .failure(unverifiedApp) }
+        if let refusal = signatureRefusal(executable: executablePath, bundle: Bundle.main.bundleURL) {
+            return .failure(refusal)
+        }
         // Quote for the embedded shell command inside the AppleScript string.
         let shellCommand = "\(shellQuoted(executablePath)) --vdm \(action)"
         let appleScriptSource = """
         do shell script "\(escapedForAppleScript(shellCommand))" with administrator privileges
         """
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", appleScriptSource]
-        let stderr = Pipe()
-        process.standardError = stderr
-        process.standardOutput = Pipe()
-
         do {
-            try process.run()
-            process.waitUntilExit()
+            let result = try ProcessOutput.run(URL(fileURLWithPath: "/usr/bin/osascript"), ["-e", appleScriptSource])
+            return runResult(status: result.status, errorText: result.errorText)
         } catch {
             return .failure(error.localizedDescription)
         }
+    }
 
-        if process.terminationStatus == 0 {
-            return .success
-        }
-
-        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-        let errorText = String(data: errorData, encoding: .utf8) ?? ""
+    /// What osascript's exit status and error output mean.
+    nonisolated static func runResult(status: Int32, errorText: String) -> RunResult {
+        if status == 0 { return .success }
         // osascript returns -128 when the user cancels the authorization dialog.
-        if errorText.contains("-128") || errorText.contains("User canceled") {
-            return .cancelled
-        }
-        let trimmed = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .failure(trimmed.isEmpty ? "The command failed (exit \(process.terminationStatus))." : trimmed)
+        if errorText.contains("-128") || errorText.contains("User canceled") { return .cancelled }
+        // The root helper's message is the last line; osascript puts its own words before it.
+        return .failure(errorText.isEmpty ? "The command failed (exit \(status))." : errorText)
+    }
+
+    nonisolated static let unverifiedApp =
+        "Serial Number Reader couldn’t verify its own app on disk, so it won’t ask for an administrator password. Reinstall the app and try again."
+
+    /// Nil when the app bundle on disk is valid and meets the running app's
+    /// own code requirement (same signer and identifier, or for a locally
+    /// signed build the same code), and `executable` is its executable;
+    /// otherwise the message to show.
+    nonisolated static func signatureRefusal(executable: String, bundle: URL) -> String? {
+        var running: SecCode?
+        var runningStatic: SecStaticCode?
+        var requirement: SecRequirement?
+        var onDisk: SecStaticCode?
+        guard SecCodeCopySelf([], &running) == errSecSuccess, let running,
+              SecCodeCopyStaticCode(running, [], &runningStatic) == errSecSuccess, let runningStatic,
+              SecCodeCopyDesignatedRequirement(runningStatic, [], &requirement) == errSecSuccess, let requirement,
+              SecStaticCodeCreateWithPath(bundle as CFURL, [], &onDisk) == errSecSuccess, let onDisk,
+              SecStaticCodeCheckValidity(onDisk, SecCSFlags(rawValue: kSecCSStrictValidate), requirement) == errSecSuccess
+        else { return unverifiedApp }
+        // The executable that would run as root must be the bundle's own.
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(onDisk, [], &info) == errSecSuccess,
+              let main = (info as? [String: Any])?[kSecCodeInfoMainExecutable as String] as? URL,
+              main.resolvingSymlinksInPath().path == URL(fileURLWithPath: executable).resolvingSymlinksInPath().path
+        else { return unverifiedApp }
+        return nil
     }
 
     private nonisolated static func shellQuoted(_ path: String) -> String {

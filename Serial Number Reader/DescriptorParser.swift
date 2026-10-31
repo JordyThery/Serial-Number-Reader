@@ -27,9 +27,6 @@ nonisolated struct ParsedDescriptor: Equatable, Sendable {
     var ecid: String? { nonEmpty("ECID") }
     /// The device serial number (SRNM). Present in Recovery mode, never in DFU.
     var serialNumber: String? { nonEmpty("SRNM") }
-    var imei: String? { nonEmpty("IMEI") }
-    /// iBoot tag (SRTG). Typically present in DFU mode.
-    var bootTag: String? { nonEmpty("SRTG") }
 }
 
 /// Pure parsing helpers for Apple USB serial-number string descriptors.
@@ -41,7 +38,7 @@ nonisolated enum DescriptorParser {
     /// `CPID:8110 CPRV:11 CPFM:03 SCEP:01 BDID:0C ECID:001A2B3C4D5E6F70 IBFL:3C SRNM:[F2LXXXXXXXXX] IMEI:[35...]`
     ///
     /// Values may be wrapped in `[brackets]`; the brackets are stripped.
-    /// Unrecognised tokens are ignored; key order is preserved.
+    /// Unrecognized tokens are ignored; key order is preserved.
     static func parse(_ descriptor: String) -> ParsedDescriptor {
         // KEY:VALUE where VALUE is either a [bracketed] run (may contain spaces) or a non-space run.
         let pattern = /([A-Za-z0-9_]+):(\[[^\]]*\]|\S+)/
@@ -58,7 +55,7 @@ nonisolated enum DescriptorParser {
         return ParsedDescriptor(fields: fields)
     }
 
-    /// Normalises a UDID read from the USB serial-number descriptor of a
+    /// Normalizes a UDID read from the USB serial-number descriptor of a
     /// normally booted device.
     ///
     /// - Older devices use a 40-character hex UDID (kept lowercase).

@@ -335,7 +335,9 @@ final class ConnectionConversionTests {
         #expect(try configuration(.basic).credentials == .basic(username: "admin", password: "password"))
         #expect(try configuration(.clientCredentials).connection?.jamfBaseURL?.absoluteString
                 == "https://yourorg.jamfcloud.com")
-        #expect(try configuration(.jamfSchool).isJamfSchool)
+        if case .jamfSchool = try configuration(.jamfSchool).credentials {} else {
+            Issue.record("Expected Jamf School credentials")
+        }
     }
 
     @Test("Setting back the connection just read leaves the record unchanged")

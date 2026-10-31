@@ -32,6 +32,7 @@ struct RestoreSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Restore \(device.modelDisplayName)?")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
 
             DeviceIdentityGrid(device: device, serialNumber: serialNumber, jamfName: jamfName)
 
@@ -120,7 +121,7 @@ struct RestoreSheet: View {
                     Label("No longer signed by Apple — the restore would fail", systemImage: "xmark.seal.fill")
                         .foregroundStyle(.red)
                 case .none:
-                    Label("Signing status unknown (betas aren't listed) — Apple decides when the restore starts",
+                    Label("Signing status unknown (betas aren’t listed) — Apple decides when the restore starts",
                           systemImage: "questionmark.circle")
                         .foregroundStyle(.secondary)
                 }
@@ -166,18 +167,17 @@ struct RestoreSheet: View {
         var isCurrent: Bool { ipswURL == url }
         defer { if isCurrent { checkingIPSW = false } }
         do {
-            let info = try await Task.detached(priority: .userInitiated) { try IPSWInfo.read(from: url) }.value
+            let info = try await BlockingWork.run { try IPSWInfo.read(from: url) }
             guard isCurrent else { return }
-            if let productType, !info.supports(productType) {
-                ipswError = "This IPSW doesn't support \(device.modelDisplayName) (\(productType))."
+            if let refusal = info.refusal(productType: productType, deviceName: device.modelDisplayName) {
+                ipswError = refusal
                 return
             }
-            if let productType {
-                let signed = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion,
-                                                           pretendDevice: PretendIPhone.isPretend(device))
-                guard isCurrent else { return }
-                ipswSigned = signed
-            }
+            guard let productType else { return }
+            let signed = await FirmwareSigning.isSigned(productType: productType, build: info.buildVersion,
+                                                       pretendDevice: PretendIPhone.isPretend(device))
+            guard isCurrent else { return }
+            ipswSigned = signed
             // Published last, together with the signing status, so the
             // restore button can't enable on a half-finished check.
             ipswInfo = info
@@ -193,7 +193,7 @@ struct RestoreSheet: View {
                          ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber) != nil {
             dismiss()
         } else {
-            refusal = restore.refusal ?? "The restore couldn't start."
+            refusal = restore.refusal ?? "The restore couldn’t start."
         }
     }
 }
@@ -213,10 +213,11 @@ struct ReviveSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Revive \(device.modelDisplayName)?")
                 .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
 
             DeviceIdentityGrid(device: device, serialNumber: serialNumber, jamfName: jamfName)
 
-            Text("Reinstalls the latest version of the operating system and keeps the device's content. If Revive doesn't fix the device, a full restore may still be needed. Keep the device connected and Serial Number Reader open until it finishes.")
+            Text("Reinstalls the latest version of the operating system and keeps the device’s content. If Revive doesn’t fix the device, a full restore may still be needed. Keep the device connected and Serial Number Reader open until it finishes.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -232,7 +233,7 @@ struct ReviveSheet: View {
                                      serialNumber: device.serialNumber) != nil {
                         dismiss()
                     } else {
-                        refusal = restore.refusal ?? "The revive couldn't start."
+                        refusal = restore.refusal ?? "The revive couldn’t start."
                     }
                 }
                 .disabled(device.configuratorECID == nil || restore.isRunning)
@@ -247,7 +248,7 @@ struct ReviveSheet: View {
 private extension View {
     /// Says why a Restore or Revive didn't start; the sheet stays open.
     func restoreRefusalAlert(_ refusal: Binding<String?>) -> some View {
-        alert("Couldn't Start", isPresented: Binding(get: { refusal.wrappedValue != nil },
+        alert("Couldn’t Start", isPresented: Binding(get: { refusal.wrappedValue != nil },
                                                      set: { if !$0 { refusal.wrappedValue = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

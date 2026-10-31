@@ -32,14 +32,6 @@ nonisolated struct JamfConfiguration: Sendable, Equatable {
         return false
     }
 
-    var isJamfSchool: Bool {
-        if case .jamfSchool = credentials { return true }
-        return false
-    }
-
-    /// The product name shown in the UI.
-    var productName: String { isJamfSchool ? "Jamf School" : "Jamf Pro" }
-
     /// The secret the sign-in uses.
     var secret: String {
         switch credentials {
@@ -137,7 +129,6 @@ nonisolated struct JamfDeviceRecord: Sendable, Equatable {
     let managed: Bool?
     let username: String?
     let realName: String?
-    let email: String?
     let lastInventoryDate: Date?
 
     /// Deep link to the record in the Jamf Pro or Jamf School web UI.
@@ -162,7 +153,7 @@ nonisolated extension JamfDeviceRecord {
                   model: device.hardware?.model, modelIdentifier: device.hardware?.modelIdentifier,
                   osVersion: device.general?.osVersion, managed: device.general?.managed,
                   username: device.userAndLocation?.username, realName: device.userAndLocation?.realName,
-                  email: device.userAndLocation?.email, lastInventoryDate: device.general?.lastInventoryUpdateDate)
+                  lastInventoryDate: device.general?.lastInventoryUpdateDate)
     }
 
     /// From JTKit's computer record; nil without a Jamf Pro ID. The date is
@@ -173,7 +164,7 @@ nonisolated extension JamfDeviceRecord {
                   serialNumber: computer.serialNumber, udid: computer.udid, model: computer.hardware?.model,
                   modelIdentifier: computer.hardware?.modelIdentifier, osVersion: computer.operatingSystem?.version,
                   managed: computer.general?.managed, username: computer.userAndLocation?.username,
-                  realName: computer.userAndLocation?.realName, email: computer.userAndLocation?.email,
+                  realName: computer.userAndLocation?.realName,
                   lastInventoryDate: computer.general?.reportDate ?? computer.general?.lastCheckIn)
     }
 
@@ -182,7 +173,7 @@ nonisolated extension JamfDeviceRecord {
         self.init(kind: .schoolDevice, jamfID: device.udid, name: device.name, assetTag: device.assetTag,
                   serialNumber: device.serialNumber, udid: device.udid, model: device.modelName,
                   modelIdentifier: device.modelIdentifier, osVersion: device.osVersion, managed: device.isManaged,
-                  username: device.ownerUsername, realName: device.ownerName, email: device.ownerEmail,
+                  username: device.ownerUsername, realName: device.ownerName,
                   lastInventoryDate: device.lastCheckIn)
     }
 }
@@ -235,16 +226,18 @@ nonisolated enum JamfService: Sendable {
         }
     }
 
-    /// Looks up a device. Serial queries try mobile devices first, then
-    /// computers (recovery-mode Macs report a serial too). UDID queries are
-    /// mobile-device only. Jamf School records are read from the
+    /// Looks up a device. Both kinds of query try mobile devices first, then
+    /// computers: Macs in Recovery report a serial, and Macs in DFU get their
+    /// UDID from Apple Configurator. Jamf School records are read from the
     /// single-device endpoint, the only one with the instance's time zone.
     func lookup(_ query: JamfQuery) async throws -> JamfLookupResult {
         switch self {
         case .pro(let client, _):
             switch query {
             case .udid(let udid):
-                return try Self.result(await client.mobileDevice(udid: udid), JamfDeviceRecord.init)
+                let mobile = try await client.mobileDevice(udid: udid)
+                if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
+                return try Self.result(await client.computer(udid: udid), JamfDeviceRecord.init)
             case .serialNumber(let serial):
                 let mobile = try await client.mobileDevice(serial: serial)
                 if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }

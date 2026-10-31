@@ -7,7 +7,7 @@ extension AboutConfiguration {
         appName: "Serial Number Reader",
         copyright: AboutCopyright(year: "2026", holder: "Jordy Thery"),
         author: "Created by Jordy Thery",
-        summary: "Identifies connected iPhones, iPads and Macs by serial number, including devices that won't boot, and looks them up in Jamf Pro or Jamf School.",
+        summary: "Identifies connected iPhones, iPads and Macs by serial number, including devices that won’t boot, and looks them up in Jamf Pro or Jamf School.",
         links: [
             AboutLink("github.com/JordyThery/Serial-Number-Reader", address: "https://github.com/JordyThery/Serial-Number-Reader"),
         ].compactMap { $0 },
@@ -16,7 +16,7 @@ extension AboutConfiguration {
 }
 
 /// Credit for macvdmtool and ThunderboltPatcher, which the USB-C power actions
-/// (`VDMTool`, `AppleHPMLib.h`) are derived from, with their Apache-2.0 licence
+/// (`VDMTool`, `AppleHPMLib.h`) are derived from, with their Apache-2.0 license
 /// as it appears in THIRD-PARTY-NOTICES.md.
 extension Acknowledgement {
     static let macvdmtool = Acknowledgement(

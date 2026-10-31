@@ -6,7 +6,7 @@ import SwiftUI
 
 /// Lookup state for one device, keyed by its Jamf query.
 nonisolated enum JamfLookupState: Equatable, Sendable {
-    /// Jamf settings are incomplete.
+    /// No connection in use, or the one in use is incomplete.
     case notConfigured
     /// This device exposes nothing Jamf can be queried with (e.g. DFU mode).
     case unavailable(String)
@@ -15,6 +15,25 @@ nonisolated enum JamfLookupState: Equatable, Sendable {
     case noMatch
     case multipleMatches(Int)
     case failed(String)
+}
+
+nonisolated extension JamfLookupState {
+    /// The detail's Jamf section and the asset-tag save, for no connection in use.
+    static let noConnectionText = "No Jamf connection in use."
+
+    /// Why the serial number isn't shown when only Jamf can give it: the same
+    /// words in the sidebar and in the detail view.
+    var serialUnavailableText: String {
+        switch self {
+        case .notConfigured: "No Jamf connection in use"
+        case .unavailable(let reason): reason
+        case .loading: "Waiting for the Jamf lookup"
+        case .found: "Not in the Jamf record"
+        case .noMatch: "No matching Jamf record"
+        case .multipleMatches: "Several Jamf records match"
+        case .failed: "The Jamf lookup failed"
+        }
+    }
 }
 
 /// Owns the active Jamf connection's API client and per-device lookup
@@ -215,7 +234,7 @@ final class JamfStore {
             case .recovery:
                 return .unavailable("No serial number to look up")
             case .normal:
-                return .unavailable("No UDID reported by the device")
+                return .unavailable("The device reported no UDID")
             }
         }
         guard isConfigured else { return .notConfigured }
@@ -284,7 +303,7 @@ final class JamfStore {
             return error.localizedDescription
         }
         guard let query = device.jamfQuery, let client = active else {
-            return "\(productName) is not configured."
+            return JamfLookupState.noConnectionText
         }
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = configurationGeneration
@@ -315,13 +334,13 @@ final class JamfStore {
         let secret = typedSecret ?? connections.secret(for: record) ?? ""
         guard let configuration = Self.configuration(for: record, secret: secret) else {
             let missing = switch record.service {
-            case .jamfPlatform: "Fill in the client ID, client secret and a valid environment ID first"
-            case .jamfSchool: "Fill in the Jamf School URL, Network ID and API key first"
-            default: "Fill in the server URL and credentials first"
+            case .jamfPlatform: "Fill in the client ID, client secret and a valid environment ID first."
+            case .jamfSchool: "Fill in the Jamf School URL, Network ID and API key first."
+            default: "Fill in the server URL and credentials first."
             }
             throw JamfSetupError(message: missing)
         }
         try await JamfService(configuration: configuration, recorder: recorder(for: record)).testConnection()
-        return "Authenticated successfully"
+        return "Connected · \(record.service == .jamfSchool ? "Jamf School" : "Jamf Pro")"
     }
 }

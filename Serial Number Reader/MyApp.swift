@@ -18,18 +18,26 @@ struct MyApp {
 }
 
 /// Owns the restore controller so quitting can be confirmed while a Restore
-/// or Revive runs.
+/// or Revive runs, and the USB actions, linked to it so neither starts while
+/// the other runs.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let restore = RestoreController(activityLog: .app, demo: AppDemo.usb)
+    let actions = DeviceActionController(activityLog: .app, demo: AppDemo.usb)
+
+    override init() {
+        super.init()
+        actions.restore = restore
+        restore.actions = actions
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard restore.isRunning else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "A restore is in progress"
-        alert.informativeText = "Quitting interrupts it, which leaves the device in Recovery mode until it's restored again."
+        alert.messageText = restore.job?.kind == .revive ? "A revive is in progress." : "A restore is in progress."
+        alert.informativeText = "Quitting interrupts it, which leaves the device in Recovery mode until it’s restored again."
         alert.addButton(withTitle: "Keep Running")
-        alert.addButton(withTitle: "Quit Anyway")
+        alert.addButton(withTitle: "Quit Anyway").hasDestructiveAction = true
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
 }
@@ -38,7 +46,6 @@ struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
     @State private var jamf = JamfStore(connections: AppDemo.connections(), activityLog: .app, demo: AppDemo.mode)
-    @State private var actions = DeviceActionController(activityLog: .app, demo: AppDemo.usb)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -50,7 +57,7 @@ struct SerialNumberReaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(monitor: monitor, jamf: jamf, actions: actions, restore: appDelegate.restore)
+            ContentView(monitor: monitor, jamf: jamf, actions: appDelegate.actions, restore: appDelegate.restore)
                 .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
                 .task {
@@ -68,7 +75,7 @@ struct SerialNumberReaderApp: App {
                 roles: [jamf.connectionRole(selection: Binding(get: { jamf.connections.activeID },
                                                                set: { jamf.connections.activeID = $0 }))]
             ) {
-                DemoModeSwitch(actions: actions, restore: appDelegate.restore)
+                DemoModeSwitch(actions: appDelegate.actions, restore: appDelegate.restore)
             }
             CommandGroup(replacing: .importExport) {
                 Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
@@ -77,6 +84,10 @@ struct SerialNumberReaderApp: App {
                 Button("Copy All Serial Numbers") { SessionExport.copySerials(rows: sessionRows) }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(SessionExport.serials(sessionRows).isEmpty)
+                Divider()
+                // The toolbar button's command, also in the menu bar.
+                Button("Clear Disconnected") { monitor.clearDisconnected() }
+                    .disabled(!monitor.hasDisconnectedDevices)
             }
         }
 

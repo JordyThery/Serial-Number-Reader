@@ -26,6 +26,8 @@ nonisolated enum PretendIPhone {
     /// What's shown when something tries to send the pretend iPhone's
     /// identifiers to real hardware.
     static let refusal = "This is Demo Mode’s pretend iPhone. Nothing was sent to a device."
+    /// A real device while demo mode is on: actions, Restore and Revive.
+    static let realDeviceRefusal = "Demo Mode is on, so real devices aren’t used. Turn off Demo Mode first."
 
     static func isPretend(id: UInt64) -> Bool { id & idMask == idPrefix }
 
@@ -39,7 +41,7 @@ nonisolated enum PretendIPhone {
         return normalized == ecid
     }
 
-    /// Any of its identifiers, so a row is recognised whichever it carries.
+    /// Any of its identifiers, so a row is recognized whichever it carries.
     static func isPretend(_ device: USBDevice) -> Bool {
         isPretend(id: device.id)
             || device.serialNumber == serial
@@ -202,7 +204,7 @@ final class DemoUSB {
         try? await Task.sleep(for: rebootTime)
         guard isOn else { return .done }
         if stage == .normal, current == nil {
-            // Back on the Lock Screen: you tapped Trust again, so the demo can go on.
+            // Back on the Lock Screen: the pretend iPhone trusts this Mac again, so the demo can go on.
             isTrusted = true
         }
         appear(stage)
@@ -227,7 +229,7 @@ final class DemoUSB {
         case .normal:
             device = USBDevice(
                 id: nextID, mode: .normal, productID: 0x12A8, usbProductName: "iPhone",
-                rawSerialDescriptor: udid, descriptor: nil, udid: udid, modelInfo: model,
+                descriptor: nil, udid: udid, modelInfo: model,
                 lockdownInfo: LockdownDeviceInfo(productType: sample.modelIdentifier, productVersion: sample.osVersion,
                                                  buildVersion: "25A0042", deviceClass: "iPhone", deviceName: deviceName),
                 locationID: PretendIPhone.locationID, configurator: configurator, isTrusted: isTrusted,
@@ -237,7 +239,7 @@ final class DemoUSB {
                 + "ECID:\(PretendIPhone.ecid) IBFL:3C" + (withSerial ? " SRNM:[\(PretendIPhone.serial)]" : "")
             device = USBDevice(
                 id: nextID, mode: .recovery, productID: USBDeviceMonitor.recoveryProductID,
-                usbProductName: "Apple Mobile Device (Recovery Mode)", rawSerialDescriptor: raw,
+                usbProductName: "Apple Mobile Device (Recovery Mode)",
                 descriptor: DescriptorParser.parse(raw), udid: nil,
                 modelInfo: ModelDatabase.shared.model(cpidHex: PretendIPhone.cpid, bdidHex: PretendIPhone.bdid) ?? model,
                 locationID: PretendIPhone.locationID, configurator: configurator, connectedAt: .now)
@@ -246,7 +248,7 @@ final class DemoUSB {
             // Configurator (simulated) identifies it, so its UDID is known.
             device = USBDevice(
                 id: nextID, mode: .dfu, productID: USBDeviceMonitor.debugUSBProductID, usbProductName: "Debug USB",
-                rawSerialDescriptor: nil, descriptor: nil, udid: udid, modelInfo: model,
+                descriptor: nil, udid: udid, modelInfo: model,
                 locationID: PretendIPhone.locationID, configurator: configurator, connectedAt: .now)
         }
         // As the monitor does: its own earlier disconnected rows make way.

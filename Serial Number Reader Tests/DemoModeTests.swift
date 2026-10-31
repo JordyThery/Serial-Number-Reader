@@ -56,15 +56,14 @@ private func until(_ condition: @MainActor () -> Bool) async {
 /// A real iPhone, booted, and one in Recovery mode (placeholder identifiers).
 private let realIPhone = USBDevice(
     id: 0x1000_0A2B, mode: .normal, productID: 0x12A8, usbProductName: "iPhone",
-    rawSerialDescriptor: "00008140001A2B3C4D5E6F70", descriptor: nil, udid: "00008140-001A2B3C4D5E6F70",
+    descriptor: nil, udid: "00008140-001A2B3C4D5E6F70",
     modelInfo: nil, locationID: 0x0110_0000,
     configurator: ConfiguratorDevice(ecid: "0x1A2B3C4D5E6F70", udid: "00008140-001A2B3C4D5E6F70",
                                      deviceType: "iPhone17,3", locationID: 0x0110_0000),
     isTrusted: true, connectedAt: .now)
 private let realRecovery = USBDevice(
     id: 0x1000_0A2C, mode: .recovery, productID: 0x1281, usbProductName: "Apple Mobile Device (Recovery Mode)",
-    rawSerialDescriptor: "CPID:8140 BDID:08 ECID:001A2B3C4D5E6F71 SRNM:[F9FXK2Q3HGMN]",
-    descriptor: DescriptorParser.parse("CPID:8140 BDID:08 ECID:001A2B3C4D5E6F71 SRNM:[F9FXK2Q3HGMN]"),
+    descriptor: DescriptorParser.parse("CPID:8140 BDID:08 ECID:001A2B3C4D5E6F71 SRNM:[PLACEHOLDR02]"),
     udid: "00008140-001A2B3C4D5E6F71", modelInfo: nil, locationID: 0x0120_0000, connectedAt: .now)
 
 @MainActor
@@ -278,7 +277,7 @@ struct DemoJamfTests {
         defer { settings.remove() }
         let record = JamfConnection(name: "Real", service: .jamfPro, signIn: .apiClient,
                                     serverURL: "pro.example.com", clientID: "client")
-        #expect(try await store.testConnection(record, typedSecret: "secret") == "Authenticated successfully")
+        #expect(try await store.testConnection(record, typedSecret: "secret") == "Connected · Jamf Pro")
         #expect(!server.requests.isEmpty)
         #expect(server.requests.allSatisfy { $0.url.host() == "pro.example.com" })
         #expect(mode.jamfProServer.requestCount == 0)

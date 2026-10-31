@@ -8,8 +8,8 @@ import Testing
 @MainActor
 @Suite("Device actions in the activity log")
 struct DeviceActionLogTests {
-    private let target = DeviceActionController.Target(name: "iPhone 16 (F9FXK2Q3HGMN)",
-                                                       identifiers: ["F9FXK2Q3HGMN", "0x1A2B3C4D5E"])
+    private let target = DeviceActionController.Target(name: "iPhone 16 (PLACEHOLDR02)",
+                                                       identifiers: ["PLACEHOLDR02", "0x1A2B3C4D5E"])
 
     @Test("A done action is recorded, with its device masked in the export")
     func done() async {
@@ -20,11 +20,11 @@ struct DeviceActionLogTests {
         let entry = try? #require(log.entries.first)
         #expect(log.entries.count == 1)
         #expect(entry?.category == "Action")
-        #expect(entry?.detail == "Restarted iPhone 16 (F9FXK2Q3HGMN) over USB")
+        #expect(entry?.detail == "Restarted iPhone 16 (PLACEHOLDR02) over USB")
         #expect(entry?.service == "USB")
         #expect(entry?.isFailure == false)
         let masked = ActivityLogExport.text(log.entries, masked: true)
-        #expect(!masked.contains("F9FXK2Q3HGMN"))
+        #expect(!masked.contains("PLACEHOLDR02"))
         #expect(!masked.contains("0x1A2B3C4D5E"))
     }
 
@@ -34,7 +34,7 @@ struct DeviceActionLogTests {
         let actions = DeviceActionController(activityLog: log)
         await actions.start(.dfu, for: target) { .failed("The command failed (exit 1).") }?.value
 
-        #expect(log.entries.first?.detail == "Couldn’t put iPhone 16 (F9FXK2Q3HGMN) into DFU mode over USB")
+        #expect(log.entries.first?.detail == "Couldn’t put iPhone 16 (PLACEHOLDR02) into DFU mode over USB")
         #expect(log.entries.first?.note == "The command failed (exit 1).")
         #expect(log.entries.first?.isFailure == true)
         #expect(actions.lastError == "The command failed (exit 1).")
@@ -79,11 +79,11 @@ struct DeviceActionLogTests {
             }
         }
         await controller.start(.restore(ipsw: nil), ecid: "0x1A2B3C4D5E", deviceName: "iPhone 16",
-                               serialNumber: "F9FXK2Q3HGMN")?.value
+                               serialNumber: "PLACEHOLDR02")?.value
 
         #expect(log.entries.map(\.detail) == [
-            "Started to restore iPhone 16 (F9FXK2Q3HGMN) with Apple Configurator",
-            "Restored iPhone 16 (F9FXK2Q3HGMN) with Apple Configurator",
+            "Started to restore iPhone 16 (PLACEHOLDR02) with Apple Configurator",
+            "Restored iPhone 16 (PLACEHOLDR02) with Apple Configurator",
         ])
         #expect(log.entries.first?.note == "Firmware: the latest signed version.")
         #expect(log.entries.allSatisfy { $0.category == "Action" && $0.service == "Apple Configurator" })

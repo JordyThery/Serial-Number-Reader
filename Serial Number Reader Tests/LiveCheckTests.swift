@@ -5,7 +5,7 @@ import JTKitTestSupport
 import Testing
 @testable import Serial_Number_Reader
 
-// Live checks (JTKit ROADMAP step 11), run only by Scripts/release-check.sh,
+// Live checks, run only by Scripts/release-check.sh,
 // which switches them on (JTKIT_LIVE=1) and passes the credentials it read
 // from the login Keychain. ⌘U skips them. Tenants are named by role only:
 // - jamfpro-readonly (Jamf Pro over the Platform API) and jamfschool-readonly:
@@ -103,7 +103,7 @@ enum LiveDevice {
     static func recovery(serial: String) -> USBDevice {
         let descriptor = "CPID:8140 BDID:08 ECID:0000000000000001 SRNM:[\(serial)]"
         return USBDevice(id: 0xDE00_7E57, mode: .recovery, productID: 0x1281, usbProductName: "Apple Mobile Device (Recovery Mode)",
-                         rawSerialDescriptor: descriptor, descriptor: DescriptorParser.parse(descriptor),
+                         descriptor: DescriptorParser.parse(descriptor),
                          udid: nil, modelInfo: nil, connectedAt: .now)
     }
 }
@@ -194,7 +194,7 @@ struct TestDevices {
     /// An unmanaged record that no device will ever enroll as, with no model
     /// or OS, like a record that never enrolled: Jamf types it "Unknown" and
     /// its device list leaves out the general section (name, asset tag), which
-    /// JTKit 0.12.3 then reads from the record itself. Its name is the first
+    /// JTKit then reads from the record itself. Its name is the first
     /// `<name>`, which the guarded network checks for the run's prefix.
     func create(name: String, serial: String, udid: String) async throws -> String {
         let xml = """
@@ -479,7 +479,7 @@ struct LiveLookupTests {
                 let tenant = try LiveTenant(run: run, role: role, service: service)
                 defer { tenant.removeSettings() }
                 guard let picked = try await Inventory.firstSerial(try tenant.client(run)) else {
-                    // Decided by Jordy: an empty inventory is reported, not failed.
+                    // An empty inventory is reported, not failed.
                     run.record(step: "\(role): nothing to look up", passed: true,
                                note: Inventory.emptyNote.isEmpty ? "no device with a serial" : Inventory.emptyNote)
                     continue
@@ -555,7 +555,7 @@ struct LiveLookupTests {
             throw LiveFailure("The app's lookup didn't find the test record")
         }
         run.record(step: step("the app's lookup finds the test record"), passed: true, note: "mobile device \(deviceID)")
-        // Never enrolled, yet the app shows its name (JTKit 0.12.3).
+        // Never enrolled, yet the app shows its name.
         run.record(step: step("the app shows the never-enrolled record's name"), passed: record.name == name,
                    note: "“\(record.name ?? "none")”")
         #expect(record.name == name)

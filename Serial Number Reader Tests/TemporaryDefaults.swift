@@ -15,7 +15,16 @@ final class TemporaryDefaults {
     init(_ purpose: String) {
         try? FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
         domain = Self.folder.appending(path: "\(purpose)-\(UUID().uuidString)").path
-        defaults = UserDefaults(suiteName: domain) ?? .standard
+        // Never the real settings: without its own domain the test stops here.
+        guard let defaults = Self.suite(domain) else {
+            preconditionFailure("No settings domain at \(domain); the test won't fall back to the real settings.")
+        }
+        self.defaults = defaults
+    }
+
+    /// The domain's settings, or nil when it can't be made: never `.standard`.
+    static func suite(_ domain: String) -> UserDefaults? {
+        UserDefaults(suiteName: domain)
     }
 
     func remove() {

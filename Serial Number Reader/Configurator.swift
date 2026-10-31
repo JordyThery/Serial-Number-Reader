@@ -98,7 +98,7 @@ nonisolated enum Configurator {
                 do {
                     // Second safeguard behind LiveUSBHardware: cfgutil never starts under tests.
                     try USBGuard.shared.check("cfgutil \(command)")
-                    guard let cfgutil = cfgutilURL else { throw Failure(message: "Apple Configurator is not installed.") }
+                    guard let cfgutil = cfgutilURL else { throw Failure(message: notInstalled) }
                     let process = Process()
                     process.executableURL = cfgutil
                     process.arguments = arguments
@@ -108,7 +108,7 @@ nonisolated enum Configurator {
                     try process.run()
                     // Drain stderr concurrently: if its pipe filled up while
                     // only stdout was being read, cfgutil would block forever.
-                    let errorOutput = drainInBackground(errors)
+                    let errorOutput = ProcessOutput.drainInBackground(errors)
 
                     var lastError: String?
                     for try await line in output.fileHandleForReading.bytes.lines {
@@ -210,7 +210,7 @@ nonisolated enum Configurator {
     }
 
     /// ECIDs appear as "0x1A2B3C4D5E6F70" (cfgutil) and "001A2B3C4D5E6F70"
-    /// (USB descriptor). Normalises to 16 uppercase hex digits for comparing.
+    /// (USB descriptor). Normalizes to 16 uppercase hex digits for comparing.
     static func normalizedECID(_ value: String) -> String? {
         var hex = value.trimmingCharacters(in: .whitespaces).uppercased()
         if hex.hasPrefix("0X") { hex.removeFirst(2) }
@@ -226,48 +226,15 @@ nonisolated enum Configurator {
 
     // MARK: - Process
 
-    /// Reads a pipe to its end on a background queue; the returned closure
-    /// waits for and returns everything read.
-    private static func drainInBackground(_ pipe: Pipe) -> @Sendable () -> Data {
-        final class Box: @unchecked Sendable { var data = Data() }
-        let box = Box()
-        let done = DispatchSemaphore(value: 0)
-        let handle = pipe.fileHandleForReading
-        DispatchQueue.global(qos: .utility).async {
-            box.data = handle.readDataToEndOfFile()
-            done.signal()
-        }
-        return {
-            done.wait()
-            return box.data
-        }
-    }
-
-    private struct Completed {
-        let output: Data
-        let errorText: String
-        let status: Int32
-    }
-
-    private static func runToCompletion(_ arguments: [String]) throws -> Completed {
+    private static func runToCompletion(_ arguments: [String]) throws -> ProcessOutput {
         // Second safeguard behind LiveUSBHardware: cfgutil never starts under tests.
         try USBGuard.shared.check("cfgutil \(arguments.last ?? "")")
-        guard let cfgutil = cfgutilURL else { throw Failure(message: "Apple Configurator is not installed.") }
-        let process = Process()
-        process.executableURL = cfgutil
-        process.arguments = arguments
-        let output = Pipe(), errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        try process.run()
-        let errorOutput = drainInBackground(errors)
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let errorData = errorOutput()
-        return Completed(
-            output: data,
-            errorText: String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
-            status: process.terminationStatus
-        )
+        guard let cfgutil = cfgutilURL else { throw Failure(message: notInstalled) }
+        return try ProcessOutput.run(cfgutil, arguments)
     }
+
+    /// Why Restore, Revive and Remove Trust can't run without it.
+    static let notInstalled = "Apple Configurator isn’t installed."
+    /// The same, for a disabled button's tooltip.
+    static let notInstalledHelp = "Apple Configurator isn’t installed (free on the App Store)."
 }

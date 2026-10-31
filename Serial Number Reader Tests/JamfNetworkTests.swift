@@ -9,11 +9,11 @@ import Testing
 @MainActor
 @Suite("Jamf networking")
 struct JamfNetworkTests {
-    private nonisolated static let serial = "C02XK1ABJG5H"
+    private nonisolated static let serial = "PLACEHOLDR05"
     private nonisolated static let udid = "00008130-001A2B3C4D5E6F70"
 
     private nonisolated static let mobileDevice = """
-        {"totalCount": 1, "results": [{"mobileDeviceId": "7",
+        {"totalCount": 1, "results": [{"mobileDeviceId": "7", "udid": "\(udid)",
           "general": {"displayName": "Lab iPad", "assetTag": "LAB-01"},
           "hardware": {"serialNumber": "\(serial)", "model": "iPad Air"}}]}
         """
@@ -314,13 +314,39 @@ struct JamfNetworkTests {
         #expect(ActivityLogExport.text(log.entries, masked: false).contains(Self.serial))
         #expect(!ActivityLogExport.text(log.entries, masked: true).contains(Self.serial))
     }
+
+    @Test("A Mac in DFU, known only by its UDID, is found as a computer when no mobile device matches")
+    func macByUDID() async throws {
+        let macUDID = "00006000-001A2B3C4D5E6F70"
+        let server = MockServer { request in
+            switch request.path {
+            case "/api/oauth/token":
+                return .json(200, #"{"access_token": "t", "expires_in": 1200}"#)
+            case "/api/v2/mobile-devices/detail":
+                return .json(200, Self.noDevices)
+            default:
+                return .json(200, #"{"totalCount": 1, "results": [{"id": "61", "udid": "\#(macUDID)", "general": {"name": "Lab Mac"}}]}"#)
+            }
+        }
+        let config = try #require(JamfConfiguration.make(
+            urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
+        let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
+
+        let record = try #require(try await client.lookup(.udid(macUDID)).record)
+
+        #expect(record.kind == .computer)
+        #expect(record.jamfID == "61")
+        #expect(record.name == "Lab Mac")
+        #expect(server.requests.map(\.path) == ["/api/oauth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
+        #expect(server.requests[2].queryValue("filter")?.contains(macUDID) == true)
+    }
 }
 
 extension JamfNetworkTests {
     fileprivate nonisolated static func record(_ kind: JamfDeviceRecord.Kind, id: String) -> JamfDeviceRecord {
         JamfDeviceRecord(kind: kind, jamfID: id, name: nil, assetTag: nil, serialNumber: nil, udid: nil, model: nil,
                          modelIdentifier: nil, osVersion: nil, managed: nil, username: nil, realName: nil,
-                         email: nil, lastInventoryDate: nil)
+                         lastInventoryDate: nil)
     }
 }
 
