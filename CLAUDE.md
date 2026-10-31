@@ -1,5 +1,7 @@
 # Serial Number Reader: instructions for Claude
 
+At the start of every conversation, run ../JTKit/Scripts/check-versions.sh (or fetch it from GitHub if ../JTKit isn’t there) and mention the result in one line if anything is out of date.
+
 Shared code and the standards for every app: see JTKit's CLAUDE.md and ROADMAP.md (github.com/JordyThery/JTKit, or ../JTKit in the workspace).
 
 ## What the app does
@@ -55,16 +57,20 @@ Build facts: not sandboxed (`ENABLE_APP_SANDBOX = NO`, needed for IOKit and the 
 
 - **Before first unlock (BFU)** a booted iPhone/iPad doesn't appear on USB at all (USB restricted mode), not in Finder or Configurator either. Not an app bug: ask whether it was unlocked once since boot. Recovery and DFU always enumerate, whatever the lock state.
 - **Product IDs** (vendor 0x05AC): Recovery 0x1281 (descriptor has the serial, SRNM, and ECID); classic DFU 0x1227 (descriptor with CPID/ECID, older devices); normal mode 0x1290–0x12AF.
-- **Current hardware in DFU** (verified on iPhone 17e, M3 iPad Air, Apple Silicon Mac, macOS 26 host) shows up as "Debug USB" 0x1881: no serial descriptor, no identifiers, access needs a private Apple entitlement. The app can only detect presence (`isOpaqueDFU`) and guides the user to Recovery, where the serial is readable. If a phantom "Apple Device (DFU)" row ever appears next to a phone in normal mode, 0x1881 also appears outside DFU and the classification needs refining.
+- **Current hardware in DFU** (verified on iPhone 17e, M3 iPad Air, Apple Silicon Mac, macOS 26 host) shows up as "Debug USB" 0x1881: no serial descriptor, no identifiers, access needs a private Apple entitlement. The app can only detect presence (`isOpaqueDFU`) and guides the user to Recovery, where the serial is readable.
 - A booted Mac never appears (it is a USB host).
 - **Unpaired lockdown reads work** while the trust prompt is open: ProductType, ProductVersion, BuildVersion, DeviceClass, DeviceName. SerialNumber, ModelNumber and RegionInfo are refused (GetProhibited). ProductName says "iPhone OS" on every device, so the OS name comes from DeviceClass.
-- **Enter Recovery on iOS/iPadOS 27:** an unpaired `EnterRecovery` is refused with `SessionInactive` (worked on iOS 26). It works over a paired session: usbmuxd `ReadPairRecord` (no root) → lockdown `StartSession` {HostID, SystemBUID} → `EnableSessionSSL` → TLS with the pair record's host certificate and key (no server check) → `EnterRecovery`. Secure Transport is used because Network.framework can't start TLS on an open socket; the client identity is built with `SecIdentityCreate` via `dlsym`, because no public API builds one from PEM. Pair records hold PKCS#8 keys; `SecKeyCreateWithData` needs PKCS#1.
+- **Enter Recovery on iOS/iPadOS 27:** an unpaired `EnterRecovery` is refused with `SessionInactive` (worked on iOS 26). It works over a paired session: usbmuxd `ReadPairRecord` (no root) → lockdown `StartSession` {HostID, SystemBUID} → `EnableSessionSSL` → TLS with the pair record's host certificate and key (no server check) → `EnterRecovery`. Secure Transport is used for the TLS; the client identity is built with `SecIdentityCreate` via `dlsym`. Pair records hold PKCS#8 keys; `SecKeyCreateWithData` needs PKCS#1.
 - **Boot to Normal** from Recovery: iBoot control transfers `setenv auto-boot true`, `saveenv`, `reboot`. A send error on `reboot` means success (the device detaches). Works on iOS 27.
 - **VDM actions** (AppleHPM) exist only for reboot and DFU, need root and a USB-C target (Lightning devices can't). The app re-launches its own binary with `--vdm <reboot|dfu>` through `osascript … with administrator privileges`, handled in `MyApp.main()` before the GUI starts; osascript returns -128 when the prompt is cancelled. "Recovery" in tools like DFU Blaster is lockdown `EnterRecovery`, not a VDM.
 - **cfgutil** (inside Apple Configurator, no admin password needed): `--format JSON list` identifies devices in every mode, including opaque DFU (ECID, UDID, deviceType, locationID). Link to the USB device by ECID/UDID; use locationID only for DFU (it once differed for a booted device). cfgutil has no enter-recovery command.
 - `cfgutil --progress --format JSON -e <ECID> restore|revive` writes JSON Lines: `Step`/`StepComplete`, `Progress` 0…1 (only while unzipping; -1 = indeterminate), then `CommandOutput`. Exit 0 = success. Reboots and disconnects during the job are expected.
 - **Revive keeps data**, from DFU and from Recovery. During a revive the device goes DFU → Recovery 0x1281 (this stage has no SRNM) → restore OS 0x12AC → normal, so "Enter DFU → Revive" can't be used to read the serial.
 - Apple stops signing older OS versions quickly; downgrades are impossible, and old-OS test devices can't be restored to that OS again.
+
+## Watchlist
+
+What this app waits for from Apple, Jamf or Microsoft, or must recheck: see WATCHLIST.md.
 
 ## Testing
 
