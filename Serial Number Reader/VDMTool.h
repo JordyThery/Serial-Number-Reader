@@ -10,12 +10,21 @@ NS_ASSUME_NONNULL_BEGIN
 /// itself with `--vdm <action>` through an administrator prompt.
 @interface VDMTool : NSObject
 
-/// action: @"reboot" or @"dfu". Tries every USB-C port with a connected
-/// device until one accepts the command (no designated-port requirement).
-/// Prints progress to stdout. Returns a process exit code:
-/// 0 = success, 2 = nothing connected, 3 = no port accepted the command,
-/// 1 = bad arguments / internal failure.
+/// action: @"reboot" or @"dfu". Works on any USB-C port, but only when
+/// exactly one port has a device connected: with more, nothing is sent,
+/// because the command addresses a port, not a device, and could reach one
+/// the app can't see. Prints progress to stdout. Returns a process exit code:
+/// 0 = success, 2 = nothing connected, 3 = the port didn't accept the
+/// command, 4 = more than one port has a device, 1 = bad arguments /
+/// internal failure.
 + (int32_t)runWithAction:(NSString *)action;
+
+/// The exit code `runWithAction:` returns for this many ports with a device
+/// before anything is sent: 0 (go ahead), 2 (none) or 4 (more than one).
++ (int32_t)exitCodeForConnectedPorts:(NSInteger)count;
+
+/// What the user is told for that count; nil when the command can be sent.
++ (nullable NSString *)refusalForConnectedPorts:(NSInteger)count;
 
 @end
 

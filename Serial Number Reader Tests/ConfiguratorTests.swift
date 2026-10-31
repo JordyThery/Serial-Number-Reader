@@ -7,7 +7,7 @@ import Testing
 @Suite("Configurator progress parsing")
 struct ConfiguratorProgressTests {
 
-    @Test("Steps and step completions are recognised")
+    @Test("Steps and step completions are recognized")
     func steps() {
         #expect(Configurator.parseEvent(#"{"Devices":["0x0000000000ABCD"],"Type":"Step","Step":"Waiting for the device"}"#)
                 == .step("Waiting for the device"))
@@ -65,7 +65,7 @@ struct ConfiguratorDeviceTests {
     }
 
     @Test("ECIDs from cfgutil and from the USB descriptor compare equal")
-    func ecidNormalisation() {
+    func ecidNormalization() {
         #expect(Configurator.normalizedECID("0x1A2B3C4D5E6F70") == "001A2B3C4D5E6F70")
         #expect(Configurator.normalizedECID("001a2b3c4d5e6f70") == "001A2B3C4D5E6F70")
         #expect(Configurator.normalizedECID("not-hex") == nil)
@@ -93,7 +93,7 @@ struct ConfiguratorDeviceTests {
     @Test("A DFU device's UDID is derived from chip ID and ECID (Configurator reports none)")
     func derivedUDID() {
         var device = USBDevice(id: 1, mode: .dfu, productID: 0x1881, usbProductName: "Debug USB",
-                               rawSerialDescriptor: nil, descriptor: nil, udid: nil, modelInfo: nil, connectedAt: .now)
+                               descriptor: nil, udid: nil, modelInfo: nil, connectedAt: .now)
         device.configurator = ConfiguratorDevice(ecid: "0x1A2B3C4D5E6F70", udid: nil, deviceType: "iPad16,1", locationID: 0x2100000)
         device.modelInfo = ModelDatabase.shared.model(identifier: "iPad16,1")
         #expect(device.displayUDID == "00008130-001A2B3C4D5E6F70")
@@ -112,7 +112,7 @@ struct ConfiguratorDeviceTests {
     @Test("A booted device's ECID comes from its UDID")
     func ecidFromUDID() {
         let device = USBDevice(id: 1, mode: .normal, productID: 0x12AB, usbProductName: "iPad",
-                               rawSerialDescriptor: nil, descriptor: nil,
+                               descriptor: nil,
                                udid: "00008130-001A2B3C4D5E6F70", modelInfo: nil, connectedAt: .now)
         #expect(device.configuratorECID == "0x1A2B3C4D5E6F70")
     }
@@ -136,5 +136,18 @@ struct IPSWInfoTests {
     @Test("A manifest without version information is rejected")
     func invalidManifest() {
         #expect(IPSWInfo.parse(manifest: ["SupportedProductTypes": ["iPad16,1"]]) == nil)
+    }
+
+    @Test("An IPSW is refused for another model, and when the model is unknown nothing is waved through")
+    func modelCheck() throws {
+        let info = try #require(IPSWInfo.parse(manifest: [
+            "ProductVersion": "27.0.1", "ProductBuildVersion": "24A446", "SupportedProductTypes": ["iPad16,1"],
+        ]))
+        #expect(info.refusal(productType: "iPad16,1", deviceName: "iPad mini") == nil)
+        #expect(info.refusal(productType: "iPhone18,5", deviceName: "iPhone")
+                == "This IPSW doesn’t support iPhone (iPhone18,5).")
+        // An unidentified DFU device: never "supports this device".
+        #expect(info.refusal(productType: nil, deviceName: "Apple Device")
+                == "The model of this device is unknown, so the IPSW couldn’t be checked. Use the latest available version instead.")
     }
 }

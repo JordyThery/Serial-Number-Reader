@@ -1,7 +1,7 @@
 import XCTest
 import JTKitUITestSupport
 
-/// The release check's UI smoke tests (JTKit ROADMAP step 11), in demo mode:
+/// The release check's UI smoke tests, in demo mode:
 /// the pretend iPhone and JTKit's Contoso servers, the same answers every run,
 /// no tenant, nothing saved, no real USB device. Run one at a time by
 /// `Scripts/release-check.sh`; minutes, not hours.

@@ -156,7 +156,7 @@ final class USBDeviceMonitor {
     /// Matches the modern `IOUSBHostDevice` class (macOS 10.11+): recent macOS
     /// releases no longer publish the legacy `IOUSBDevice` compatibility nubs,
     /// so matching `kIOUSBDeviceClassName` never fires for attached devices.
-    /// No `idVendor` key here — USB matching dictionaries only honour specific
+    /// No `idVendor` key here — USB matching dictionaries only honor specific
     /// key combinations, so vendor filtering happens in `makeDevice(from:)`.
     ///
     /// `IOServiceAddMatchingNotification` consumes one reference per call, so
@@ -216,15 +216,20 @@ final class USBDeviceMonitor {
         }
     }
 
+    /// A real device was unplugged (from IOKit, or a test). The entry stays
+    /// cached so its data stays visible after unplugging.
+    func markDisconnected(entryID: UInt64) {
+        guard let index = realDevices.firstIndex(where: { $0.id == entryID }) else { return }
+        realDevices[index].isConnected = false
+        realDevices[index].disconnectedAt = .now
+    }
+
     fileprivate func handleRemoved(iterator: io_iterator_t) {
         var service = IOIteratorNext(iterator)
         while service != 0 {
             var entryID: UInt64 = 0
-            if IORegistryEntryGetRegistryEntryID(service, &entryID) == KERN_SUCCESS,
-               let index = realDevices.firstIndex(where: { $0.id == entryID }) {
-                // Keep the entry cached so its data stays visible after unplugging.
-                realDevices[index].isConnected = false
-                realDevices[index].disconnectedAt = .now
+            if IORegistryEntryGetRegistryEntryID(service, &entryID) == KERN_SUCCESS {
+                markDisconnected(entryID: entryID)
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
@@ -381,7 +386,7 @@ final class USBDeviceMonitor {
             let model = ModelDatabase.shared.model(cpidHex: parsed?.cpid, bdidHex: parsed?.bdid)
             return USBDevice(
                 id: entryID, mode: mode, productID: productID,
-                usbProductName: productName, rawSerialDescriptor: serialString,
+                usbProductName: productName,
                 descriptor: parsed, udid: nil, modelInfo: model,
                 locationID: location, connectedAt: .now
             )
@@ -398,7 +403,7 @@ final class USBDeviceMonitor {
             let udid = serialString.flatMap(DescriptorParser.normalizedUDID)
             return USBDevice(
                 id: entryID, mode: .normal, productID: productID,
-                usbProductName: productName, rawSerialDescriptor: serialString,
+                usbProductName: productName,
                 descriptor: nil, udid: udid, modelInfo: nil,
                 locationID: location, connectedAt: .now
             )

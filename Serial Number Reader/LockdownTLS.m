@@ -103,9 +103,63 @@ typedef SecIdentityRef (*SecIdentityCreateFunction)(CFAllocatorRef, SecCertifica
     SSLContextRef _context;
 }
 
++ (nullable NSData *)DERFromPEM:(NSData *)pem {
+    return DERFromPEM(pem);
+}
+
++ (nullable NSData *)PKCS1KeyFromPEM:(NSData *)pem {
+    NSString *text = [[NSString alloc] initWithData:pem encoding:NSASCIIStringEncoding] ?: @"";
+    NSData *der = DERFromPEM(pem);
+    if (der.length == 0) return nil;
+    return [text containsString:@"BEGIN RSA PRIVATE KEY"] ? der : PKCS1FromPKCS8(der);
+}
+
++ (BOOL)peerCertificate:(NSData *)peerDER
+    matchesDeviceCertificatePEM:(nullable NSData *)deviceCertificatePEM
+             rootCertificatePEM:(nullable NSData *)rootCertificatePEM {
+    if (peerDER.length == 0) return NO;
+    NSData *deviceDER = deviceCertificatePEM ? DERFromPEM(deviceCertificatePEM) : nil;
+    if (deviceDER.length > 0 && [deviceDER isEqualToData:peerDER]) return YES;
+
+    // Otherwise the certificate must be issued by the pairing's own root.
+    NSData *rootDER = rootCertificatePEM ? DERFromPEM(rootCertificatePEM) : nil;
+    if (rootDER.length == 0) return NO;
+    SecCertificateRef peer = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)peerDER);
+    SecCertificateRef root = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)rootDER);
+    BOOL trusted = NO;
+    if (peer && root) {
+        SecPolicyRef policy = SecPolicyCreateBasicX509();
+        SecTrustRef trust = NULL;
+        if (SecTrustCreateWithCertificates(peer, policy, &trust) == errSecSuccess) {
+            SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)@[(__bridge id)root]);
+            SecTrustSetAnchorCertificatesOnly(trust, true);
+            // No network: the pairing's root has no revocation service.
+            SecTrustSetNetworkFetchAllowed(trust, false);
+            trusted = SecTrustEvaluateWithError(trust, NULL);
+            CFRelease(trust);
+        }
+        CFRelease(policy);
+    }
+    if (peer) CFRelease(peer);
+    if (root) CFRelease(root);
+    return trusted;
+}
+
+/// The device's own certificate from the handshake, as DER; nil if there is none.
+static NSData *PeerCertificateDER(SSLContextRef context) {
+    SecTrustRef trust = NULL;
+    if (SSLCopyPeerTrust(context, &trust) != noErr || !trust) return nil;
+    NSArray *chain = CFBridgingRelease(SecTrustCopyCertificateChain(trust));
+    CFRelease(trust);
+    SecCertificateRef leaf = (__bridge SecCertificateRef)chain.firstObject;
+    return leaf ? CFBridgingRelease(SecCertificateCopyData(leaf)) : nil;
+}
+
 - (nullable instancetype)initWithSocket:(int)fd
                          certificatePEM:(NSData *)certificatePEM
                           privateKeyPEM:(NSData *)privateKeyPEM
+                   deviceCertificatePEM:(nullable NSData *)deviceCertificatePEM
+                     rootCertificatePEM:(nullable NSData *)rootCertificatePEM
                                   error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
@@ -115,9 +169,7 @@ typedef SecIdentityRef (*SecIdentityCreateFunction)(CFAllocatorRef, SecCertifica
     SecCertificateRef certificate = certificateDER
         ? SecCertificateCreateWithData(NULL, (__bridge CFDataRef)certificateDER) : NULL;
 
-    NSString *keyText = [[NSString alloc] initWithData:privateKeyPEM encoding:NSASCIIStringEncoding] ?: @"";
-    NSData *keyDER = DERFromPEM(privateKeyPEM);
-    if (keyDER && ![keyText containsString:@"BEGIN RSA PRIVATE KEY"]) keyDER = PKCS1FromPKCS8(keyDER);
+    NSData *keyDER = [LockdownTLS PKCS1KeyFromPEM:privateKeyPEM];
     SecKeyRef key = NULL;
     if (keyDER) {
         NSDictionary *attributes = @{
@@ -129,7 +181,7 @@ typedef SecIdentityRef (*SecIdentityCreateFunction)(CFAllocatorRef, SecCertifica
     if (!certificate || !key) {
         if (certificate) CFRelease(certificate);
         if (key) CFRelease(key);
-        if (error) *error = TLSError(@"The pairing record's certificate or key couldn't be read", errSecDecode);
+        if (error) *error = TLSError(@"The pairing record’s certificate or key couldn’t be read", errSecDecode);
         return nil;
     }
 
@@ -139,26 +191,33 @@ typedef SecIdentityRef (*SecIdentityCreateFunction)(CFAllocatorRef, SecCertifica
     CFRelease(certificate);
     CFRelease(key);
     if (!identity) {
-        if (error) *error = TLSError(@"Couldn't create a signing identity from the pairing record", errSecUnimplemented);
+        if (error) *error = TLSError(@"Couldn’t create a signing identity from the pairing record", errSecUnimplemented);
         return nil;
     }
 
     _context = SSLCreateContext(NULL, kSSLClientSide, kSSLStreamType);
     SSLSetIOFuncs(_context, TLSRead, TLSWrite);
     SSLSetConnection(_context, &self->_fd);
-    // The device presents a certificate from its own pairing CA, not a public
-    // one; the link is a local USB tunnel to a device the user chose, so the
-    // server certificate is not evaluated.
+    // The device presents a certificate from its pairing, not a public one:
+    // the handshake stops after the server's certificate so it can be checked
+    // against the pairing record below, instead of against public roots.
     SSLSetSessionOption(_context, kSSLSessionOptionBreakOnServerAuth, true);
     OSStatus status = SSLSetCertificate(_context, (__bridge CFArrayRef)@[(__bridge id)identity]);
     CFRelease(identity);
     if (status != noErr) {
-        if (error) *error = TLSError(@"Couldn't attach the pairing identity", status);
+        if (error) *error = TLSError(@"Couldn’t attach the pairing identity", status);
         return nil;
     }
 
     do {
         status = SSLHandshake(_context);
+        if (status == errSSLServerAuthCompleted
+            && ![LockdownTLS peerCertificate:PeerCertificateDER(_context) ?: [NSData data]
+                 matchesDeviceCertificatePEM:deviceCertificatePEM
+                          rootCertificatePEM:rootCertificatePEM]) {
+            if (error) *error = TLSError(@"The device’s certificate doesn’t match this Mac’s pairing record", errSSLXCertChainInvalid);
+            return nil;
+        }
     } while (status == errSSLServerAuthCompleted);
     if (status != noErr) {
         if (error) *error = TLSError(@"The TLS handshake with the device failed", status);

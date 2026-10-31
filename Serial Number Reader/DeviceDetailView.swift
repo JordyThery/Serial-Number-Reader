@@ -121,8 +121,8 @@ struct DeviceDetailView: View {
                 }
                 .disabled(isBusy || vdmUnavailable)
                 .help(vdmUnavailable
-                      ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
-                      : "Force-restart via USB-C power delivery — requires an administrator password")
+                      ? Self.vdmUnavailableHelp
+                      : "Force-restart over USB-C power delivery — requires an administrator password")
 
                 if device.mode != .dfu {
                     Button {
@@ -132,8 +132,8 @@ struct DeviceDetailView: View {
                     }
                     .disabled(isBusy || vdmUnavailable)
                     .help(vdmUnavailable
-                          ? "Disabled while multiple devices are connected — the USB-C command targets a port, not a specific device"
-                          : "Reboot into DFU mode via USB-C power delivery — requires an administrator password")
+                          ? Self.vdmUnavailableHelp
+                          : "Reboot into DFU mode over USB-C power delivery — requires an administrator password")
                 }
 
                 if actions.runningAction != nil {
@@ -158,7 +158,7 @@ struct DeviceDetailView: View {
                         Label("Revive…", systemImage: "cross.case")
                     }
                     .disabled(isBusy || restoreUnavailableReason != nil)
-                    .help(restoreUnavailableReason ?? "Reinstall the operating system and keep the device's content")
+                    .help(restoreUnavailableReason ?? "Reinstall the operating system and keep the device’s content")
                     Spacer()
                 }
             } else if device.isTrusted {
@@ -172,7 +172,7 @@ struct DeviceDetailView: View {
                     .disabled(isBusy || !actions.isConfiguratorAvailable)
                     .help(actions.isConfiguratorAvailable
                           ? "Remove the pairing between this Mac and the device, on both sides"
-                          : "Requires Apple Configurator (free, App Store)")
+                          : Configurator.notInstalledHelp)
                     Spacer()
                 }
             }
@@ -214,16 +214,20 @@ struct DeviceDetailView: View {
 
     /// Why Restore and Revive can't run for this device, or nil when they can.
     private var restoreUnavailableReason: String? {
-        if !actions.isConfiguratorAvailable { return "Requires Apple Configurator (free, App Store)" }
+        if !actions.isConfiguratorAvailable { return Configurator.notInstalledHelp }
         if device.configuratorECID == nil {
-            return "Apple Configurator hasn't identified this device yet"
+            return "Apple Configurator hasn’t identified this device yet."
         }
         return nil
     }
 
-    /// The USB-PD command goes to the first connected port, so with several
+    /// The USB-PD command goes to a port, not a device, so with several
     /// devices attached it could hit the wrong one — offer it only for one.
+    /// (The root helper refuses too when more than one port has something.)
     private var vdmUnavailable: Bool { connectedDeviceCount > 1 }
+
+    private static let vdmUnavailableHelp =
+        "Disabled while more than one device is connected — the USB-C command targets a port, not a specific device"
 
     private var powerFooterText: String {
         var text = switch device.mode {
@@ -251,7 +255,7 @@ struct DeviceDetailView: View {
                 CopyableRow(label: "Serial Number", value: serial, showsQR: true)
             } else if device.mode == .recovery {
                 LabeledContent("Serial Number") {
-                    Text("Not reported — the descriptor contains no SRNM field")
+                    Text(USBDevice.noSRNM)
                         .foregroundStyle(.secondary)
                 }
             } else if device.mode == .dfu, device.jamfQuery == nil {
@@ -282,20 +286,11 @@ struct DeviceDetailView: View {
             if let serial = record.serialNumber {
                 CopyableRow(label: "Serial Number (from Jamf)", value: serial, showsQR: true)
             } else {
-                unavailableSerialRow("Not present in the Jamf record")
+                unavailableSerialRow(JamfLookupState.found(record).serialUnavailableText)
             }
-        case .notConfigured:
-            unavailableSerialRow("Requires a Jamf lookup — configure Jamf in Settings")
-        case .noMatch:
-            unavailableSerialRow("No matching Jamf record")
-        case .multipleMatches:
-            unavailableSerialRow("Ambiguous — multiple Jamf records match")
-        case .failed:
-            unavailableSerialRow("Jamf lookup failed — see the \(jamf.productName) section")
-        case .unavailable(let reason):
-            unavailableSerialRow(reason)
-        case .loading:
-            unavailableSerialRow("Pending Jamf lookup")
+        case let state:
+            // The sidebar's words for the same state.
+            unavailableSerialRow(state.serialUnavailableText)
         }
     }
 
@@ -311,11 +306,14 @@ struct DeviceDetailView: View {
         Section("Exit DFU → Enter Recovery Mode") {
             if device.isOpaqueDFU {
                 if device.configurator != nil {
-                    Text("Identified through Apple Configurator. Its serial number isn't available over USB in DFU mode — it comes from Jamf when the device is enrolled, or appears in Recovery mode.")
+                    Text("Identified through Apple Configurator. Its serial number isn’t available over USB in DFU mode — it comes from Jamf when the device is enrolled, or appears in Recovery mode.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). With Apple Configurator installed, Serial Number Reader identifies it automatically.")
+                    Text("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). "
+                         + (actions.isConfiguratorAvailable
+                            ? "Apple Configurator hasn’t identified it yet."
+                            : "With Apple Configurator installed, Serial Number Reader identifies it automatically."))
                         .font(.callout)
                         .foregroundStyle(.orange)
                 }
@@ -352,7 +350,7 @@ struct DeviceDetailView: View {
         Section(jamf.productName) {
             switch jamf.state(for: device) {
             case .notConfigured:
-                Text("Jamf is not configured.")
+                Text(JamfLookupState.noConnectionText)
                     .foregroundStyle(.secondary)
                 SettingsLink {
                     Text("Open Settings…")
@@ -393,7 +391,7 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func jamfRecordRows(_ record: JamfDeviceRecord) -> some View {
         if let name = record.name {
-            LabeledContent("Device Name", value: name)
+            LabeledContent("Jamf Name", value: name)
         }
         if let serial = record.serialNumber {
             CopyableRow(label: "Serial Number", value: serial, showsQR: true)
@@ -484,6 +482,7 @@ struct AssetTagRow: View {
                             isEditing = false
                             errorMessage = nil
                         }
+                        .keyboardShortcut(.cancelAction)
                         .controlSize(.small)
                     }
                 }
@@ -503,6 +502,7 @@ struct AssetTagRow: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Edit asset tag")
+                    .accessibilityLabel("Edit Asset Tag")
                 }
             }
         }
@@ -560,6 +560,7 @@ struct CopyableRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Copy \(label)")
+                .accessibilityLabel("Copy \(label)")
 
                 if showsQR {
                     Button {
@@ -570,6 +571,7 @@ struct CopyableRow: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Show \(label) as a scannable QR code")
+                    .accessibilityLabel("Show \(label) as QR Code")
                     .popover(isPresented: $showingQR, arrowEdge: .bottom) {
                         QRCodeView(text: value, caption: label)
                     }
@@ -596,7 +598,7 @@ struct QRCodeView: View {
                     .frame(width: 220, height: 220)
                     .accessibilityLabel("QR code for \(caption)")
             } else {
-                ContentUnavailableView("Couldn't generate QR code", systemImage: "qrcode")
+                ContentUnavailableView("Couldn’t Generate QR Code", systemImage: "qrcode")
                     .frame(width: 220, height: 220)
             }
             Text(text)

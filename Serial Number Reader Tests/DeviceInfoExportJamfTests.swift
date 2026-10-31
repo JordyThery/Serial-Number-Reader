@@ -44,7 +44,7 @@ struct SessionExportTests {
 
     @Test("Plain fields are written as-is")
     func plain() {
-        #expect(SessionExport.escape("F2LXK1ABCD6M") == "F2LXK1ABCD6M")
+        #expect(SessionExport.escape("PLACEHOLDR03") == "PLACEHOLDR03")
         #expect(SessionExport.escape("00008150-001A2B3C4D5E6F70") == "00008150-001A2B3C4D5E6F70")
     }
 
@@ -57,7 +57,7 @@ struct SessionExportTests {
         #expect(SessionExport.escape("line\r\nbreak") == "\"line\r\nbreak\"")
     }
 
-    @Test("Formula-like values are neutralised")
+    @Test("Formula-like values are neutralized")
     func formulaInjection() {
         #expect(SessionExport.escape("=HYPERLINK(\"x\")") == "\"'=HYPERLINK(\"\"x\"\")\"")
         #expect(SessionExport.escape("+1") == "'+1")

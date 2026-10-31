@@ -7,7 +7,7 @@ nonisolated enum DeviceMode: String, Sendable {
     case normal = "Normal"
 }
 
-/// What to look up in Jamf Pro for a given device.
+/// What to look up in Jamf Pro or Jamf School for a given device.
 nonisolated enum JamfQuery: Hashable, Sendable {
     case serialNumber(String)
     case udid(String)
@@ -20,11 +20,9 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     let mode: DeviceMode
     let productID: Int
     let usbProductName: String?
-    /// The raw USB serial-number string descriptor, exactly as reported.
-    let rawSerialDescriptor: String?
     /// Parsed descriptor fields (Recovery/DFU only).
     let descriptor: ParsedDescriptor?
-    /// Normalised UDID (Normal mode only).
+    /// Normalized UDID (Normal mode only).
     let udid: String?
     /// Model resolved from CPID/BDID (Recovery/DFU) or from the model
     /// identifier a booted device reports.
@@ -112,19 +110,22 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
         return usbProductName ?? "Apple Device"
     }
 
+    /// A Recovery descriptor without a serial (sidebar and detail).
+    static let noSRNM = "Not reported: the descriptor has no SRNM field"
+
     /// What this row shows in the serial column when no Jamf data is available yet.
     var serialStatusText: String {
         switch mode {
         case .recovery:
-            return serialNumber ?? "No SRNM field in descriptor — serial not reported"
+            return serialNumber ?? Self.noSRNM
         case .dfu:
-            return "Serial can't be read in DFU mode"
+            return "Not readable in DFU mode"
         case .normal:
-            return "Serial pending Jamf lookup"
+            return "Waiting for the Jamf lookup"
         }
     }
 
-    /// The Jamf Pro lookup this device supports, if any.
+    /// The Jamf Pro or Jamf School lookup this device supports, if any.
     var jamfQuery: JamfQuery? {
         switch mode {
         case .recovery:

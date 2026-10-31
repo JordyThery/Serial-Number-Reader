@@ -3,7 +3,7 @@ import JTKit
 import os
 
 /// Under tests the app reaches neither a real USB device nor a saved
-/// connection (JTKit ROADMAP step 11, decided by Jordy). "Under tests" is the
+/// connection. "Under tests" is the
 /// host of the unit tests and a sandbox launch (`-JTKitSandbox YES`, which
 /// the UI tests use). Every attempt is refused before anything happens and
 /// written down, so the release check can show it in its report and fail.

@@ -37,7 +37,7 @@ struct SettingsView: View {
         case (.jamfPro, _):
             "Create an API client in Jamf Pro under Settings → System → API roles and clients. It needs “Read Mobile Devices” and “Read Computers” privileges — plus “Update Mobile Devices” / “Update Computers” to edit asset tags. The client secret is stored in the Keychain."
         case (.jamfPlatform, _):
-            "Create an integration in Jamf Account scoped to a platform environment, in the region your Jamf Pro is hosted in. It needs the devices:read permission, plus devices:update to edit asset tags. Copy the environment ID from the integration's details. Integrations expire after six months. The Jamf Pro web address is optional and used only for “Open in Jamf Pro” links. The client secret is stored in the Keychain."
+            "Create an integration in Jamf Account scoped to a platform environment, in the region your Jamf Pro is hosted in. It needs the devices:read permission, plus devices:update to edit asset tags. Copy the environment ID from the integration’s details. Integrations expire after six months. The Jamf Pro web address is optional and used only for “Open in Jamf Pro” links. The client secret is stored in the Keychain."
         case (.jamfSchool, _):
             "Find the Network ID and create an API key in Jamf School under Organization → Settings → API. The key needs read access to devices, plus write access to edit asset tags. The API key is stored in the Keychain."
         default:
@@ -48,7 +48,8 @@ struct SettingsView: View {
 
 #Preview {
     SettingsTabs {
-        SettingsView(jamf: JamfStore())
+        // Never the saved connections: a throwaway store, as for the unit tests.
+        SettingsView(jamf: .preview)
     }
     .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }

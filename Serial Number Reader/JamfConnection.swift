@@ -120,7 +120,10 @@ final class JamfConnectionStore {
 
     /// A throwaway settings domain, emptied before anything reads it.
     static func emptiedDefaults(domain: String) -> UserDefaults {
-        guard let defaults = UserDefaults(suiteName: domain) else { return .standard }
+        // Never the real settings instead: the unit-test host would change them.
+        guard let defaults = UserDefaults(suiteName: domain) else {
+            preconditionFailure("No settings domain \(domain).")
+        }
         defaults.removePersistentDomain(forName: domain)
         return defaults
     }

@@ -22,8 +22,7 @@ struct JamfSchoolTests {
             credentials: .jamfSchool(networkID: "012345", apiKey: "KEY")))
         #expect(config.serverURL?.absoluteString == "https://yourschool.jamfcloud.com")
         #expect(config.connection == nil)
-        #expect(config.isJamfSchool)
-        #expect(config.productName == "Jamf School")
+        #expect(config.credentials == .jamfSchool(networkID: "012345", apiKey: "KEY"))
         #expect(JamfConfiguration.make(urlString: "yourschool.jamfcloud.com",
                                        credentials: .jamfSchool(networkID: "", apiKey: "KEY")) == nil)
     }
@@ -32,7 +31,7 @@ struct JamfSchoolTests {
     func webLink() throws {
         let record = JamfDeviceRecord(kind: .schoolDevice, jamfID: "00008130-001A2B3C4D5E6F70", name: nil,
                                       assetTag: nil, serialNumber: nil, udid: nil, model: nil, modelIdentifier: nil,
-                                      osVersion: nil, managed: nil, username: nil, realName: nil, email: nil,
+                                      osVersion: nil, managed: nil, username: nil, realName: nil,
                                       lastInventoryDate: nil)
         let url = record.webURL(baseURL: try #require(URL(string: "https://yourschool.jamfcloud.com")))
         #expect(url?.absoluteString == "https://yourschool.jamfcloud.com/devices/details/00008130-001A2B3C4D5E6F70")
@@ -42,16 +41,16 @@ struct JamfSchoolTests {
     func lookup() async throws {
         let server = MockServer { request in
             if request.path == "/api/devices" {
-                return .json(200, #"{"code":200,"count":1,"devices":[{"UDID":"00008130-001A2B3C4D5E6F70","serialNumber":"DMPXK1ABJG5H","isManaged":true}]}"#)
+                return .json(200, #"{"code":200,"count":1,"devices":[{"UDID":"00008130-001A2B3C4D5E6F70","serialNumber":"PLACEHOLDR06","isManaged":true}]}"#)
             }
             return .json(200, #"""
-                {"code":200,"device":{"UDID":"00008130-001A2B3C4D5E6F70","serialNumber":"DMPXK1ABJG5H","name":"Lab iPad",
+                {"code":200,"device":{"UDID":"00008130-001A2B3C4D5E6F70","serialNumber":"PLACEHOLDR06","name":"Lab iPad",
                  "assetTag":"","model":{"name":"iPad Air","identifier":"iPad13,16"},"os":{"prefix":"iOS","version":"26.0"},
                  "owner":{"name":"Jane Doe","username":"jane","email":"jane@school.example"},"isManaged":1,
                  "lastCheckin":{"date":"2026-10-25 10:22:25.000000","timezone_type":3,"timezone":"UTC"}}}
                 """#)
         }
-        let result = try await service(server).lookup(.serialNumber("DMPXK1ABJG5H"))
+        let result = try await service(server).lookup(.serialNumber("PLACEHOLDR06"))
         guard case .found(let record) = result else {
             Issue.record("Expected a record, got \(result)")
             return
@@ -71,7 +70,7 @@ struct JamfSchoolTests {
     @Test("No device in the list, or DeviceNotFound, means no match")
     func noMatch() async throws {
         let empty = MockServer { _ in .json(200, #"{"code":200,"count":0,"devices":[]}"#) }
-        #expect(try await service(empty).lookup(.serialNumber("DMPXK1ABJG5H")) == .noMatch)
+        #expect(try await service(empty).lookup(.serialNumber("PLACEHOLDR06")) == .noMatch)
         let missing = MockServer { _ in .json(404, #"{"code":404,"message":"DeviceNotFound"}"#) }
         #expect(try await service(missing).lookup(.udid("00008130-001A2B3C4D5E6F70")) == .noMatch)
     }
@@ -107,7 +106,7 @@ struct JamfSchoolTests {
         let server = MockServer { _ in .json(200, #"{"code":200}"#) }
         let record = JamfDeviceRecord(kind: .schoolDevice, jamfID: "00008130-001A2B3C4D5E6F70", name: nil,
                                       assetTag: nil, serialNumber: nil, udid: nil, model: nil, modelIdentifier: nil,
-                                      osVersion: nil, managed: nil, username: nil, realName: nil, email: nil,
+                                      osVersion: nil, managed: nil, username: nil, realName: nil,
                                       lastInventoryDate: nil)
         try await service(server).updateAssetTag("A+B&C=D é", record: record)
         #expect(server.requests.first?.path == "/api/devices/00008130-001A2B3C4D5E6F70/details")
