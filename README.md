@@ -93,6 +93,10 @@ USB-PD VDM power actions are derived from [AsahiLinux/macvdmtool](https://github
 
 If Serial Number Reader saves you time, you can [buy me a coffee](https://buymeacoffee.com/jordythery). ☕️
 
+## Disclaimer
+
+This tool is provided as-is, without warranty of any kind. Use it at your own risk. This is a personal project. It is not affiliated with or endorsed by my employer, Jamf or Apple. Issues and pull requests are appreciated. Support is best-effort.
+
 ## License
 
 [MIT](LICENSE)
