@@ -226,22 +226,29 @@ nonisolated enum JamfService: Sendable {
         }
     }
 
-    /// Looks up a device. Both kinds of query try mobile devices first, then
-    /// computers: Macs in Recovery report a serial, and Macs in DFU get their
-    /// UDID from Apple Configurator. Jamf School records are read from the
-    /// single-device endpoint, the only one with the instance's time zone.
-    func lookup(_ query: JamfQuery) async throws -> JamfLookupResult {
+    /// Looks up a device. Both kinds of query try mobile devices first, then,
+    /// when the device could be a Mac (`computers`), computers: Macs in
+    /// Recovery report a serial, and Macs in DFU get their UDID from Apple
+    /// Configurator. Jamf School records are read from the single-device
+    /// endpoint, the only one with the instance's time zone.
+    func lookup(_ query: JamfQuery, computers: ComputerLookup) async throws -> JamfLookupResult {
         switch self {
         case .pro(let client, _):
-            switch query {
-            case .udid(let udid):
-                let mobile = try await client.mobileDevice(udid: udid)
-                if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
-                return try Self.result(await client.computer(udid: udid), JamfDeviceRecord.init)
-            case .serialNumber(let serial):
-                let mobile = try await client.mobileDevice(serial: serial)
-                if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
-                return try Self.result(await client.computer(serial: serial), JamfDeviceRecord.init)
+            let mobile = switch query {
+            case .udid(let udid): try await client.mobileDevice(udid: udid)
+            case .serialNumber(let serial): try await client.mobileDevice(serial: serial)
+            }
+            if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
+            guard computers != .skip else { return .noMatch }
+            do {
+                let computer = switch query {
+                case .udid(let udid): try await client.computer(udid: udid)
+                case .serialNumber(let serial): try await client.computer(serial: serial)
+                }
+                return try Self.result(computer, JamfDeviceRecord.init)
+            } catch let error as JamfPlatform.APIError where error.status == 403 && computers == .ifPermitted {
+                // An iPhone or iPad: without "Read Computers" it simply isn't a computer.
+                return .noMatch
             }
         case .school(let client):
             let udid: String

@@ -54,6 +54,13 @@ final class JamfStore {
 
     /// The active connection with its secret; nil when it is incomplete.
     private(set) var configuration: JamfConfiguration?
+    /// Why the connection in use can't be used although it is filled in: an
+    /// address that isn't https://, or a Keychain that can't be read. Shown
+    /// instead of "No Jamf connection in use".
+    private(set) var connectionProblem: String?
+    /// The waits before a retry going on now ("Jamf asked to wait 40 s"),
+    /// shown with a Stop button.
+    let waits = RequestWaits()
 
     private(set) var lookupStates: [JamfQuery: JamfLookupState] = [:]
     /// Bumped whenever the configuration changes; the UI observes it to re-run
@@ -70,6 +77,8 @@ final class JamfStore {
     /// The demo connection in use when the lookups were last reset.
     @ObservationIgnored private var demoConnectionID: UUID?
     @ObservationIgnored private var inFlight: Set<JamfQuery> = []
+    /// Whether each query's device could be a Mac (`USBDevice.computerLookup`).
+    @ObservationIgnored private var computerLookups: [JamfQuery: ComputerLookup] = [:]
     @ObservationIgnored private let session: URLSession
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "JamfStore")
 
@@ -89,7 +98,7 @@ final class JamfStore {
         self.session = TestRun.isActive && connections.holdsSavedConnections
             ? TestRun.refusingSession(log: .savedConnections, message: UnderTest.refusal) : session
         demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoJamfPro, .demoJamfSchool]) }
-        configuration = activeConfiguration()
+        (configuration, connectionProblem) = activeSetup()
         demoConnectionID = demoConnection?.id
         observeConnections()
     }
@@ -116,7 +125,7 @@ final class JamfStore {
     /// Sends and records the requests of one connection, named in the log.
     private func recorder(for record: JamfConnection) -> RequestRecorder {
         RequestRecorder(session: session, log: activityLog, service: record.service.displayName,
-                        connection: record.name)
+                        connection: record.name, waits: waits)
     }
 
     /// Builds the client configuration for a connection and its secret, or
@@ -148,6 +157,20 @@ final class JamfStore {
         return JamfConfiguration.make(urlString: url, credentials: credentials)
     }
 
+    /// JTKit's sentence for a server address it won't use, e.g. "Use an
+    /// https:// address." for one saved as http:// by an earlier version.
+    /// Nil when the address is fine or not filled in. The Platform API's Jamf
+    /// Pro address is only for links and isn't checked.
+    nonisolated static func addressProblem(for record: JamfConnection) -> String? {
+        switch record.service {
+        case .jamfPro, .jamfSchool:
+            guard !record.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return Connection.addressProblem(record.serverURL)
+        default:
+            return nil
+        }
+    }
+
     /// "Jamf Pro" or "Jamf School", for section titles and messages.
     var productName: String {
         let service = demoConnection?.service ?? connections.activeConnection?.service
@@ -161,9 +184,15 @@ final class JamfStore {
     /// servers have no web pages.
     var webBaseURL: URL? { demoConnection == nil ? configuration?.webBaseURL : nil }
 
-    private func activeConfiguration() -> JamfConfiguration? {
-        guard let record = connections.activeConnection else { return nil }
-        return Self.configuration(for: record, secret: connections.secret(for: record) ?? "")
+    /// The connection in use as a configuration, or why it can't be used.
+    private func activeSetup() -> (JamfConfiguration?, problem: String?) {
+        guard let record = connections.activeConnection else { return (nil, nil) }
+        if let problem = Self.addressProblem(for: record) { return (nil, problem) }
+        do {
+            return (Self.configuration(for: record, secret: try connections.readSecret(for: record) ?? ""), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
     }
 
     /// Follows the connection in use: switching to another one, or saving
@@ -182,10 +211,11 @@ final class JamfStore {
     }
 
     private func connectionsChanged() {
-        let updated = activeConfiguration()
+        let (updated, problem) = activeSetup()
         let demoID = demoConnection?.id
-        guard updated != configuration || demoID != demoConnectionID else { return }
+        guard updated != configuration || problem != connectionProblem || demoID != demoConnectionID else { return }
         configuration = updated
+        connectionProblem = problem
         demoConnectionID = demoID
         invalidateClient()
     }
@@ -207,7 +237,7 @@ final class JamfStore {
             if let client, clientKey == key { return client }
             guard let source = demoChoice?.mode.source(for: demo) else { return nil }
             let recorder = RequestRecorder(session: source.session, log: activityLog,
-                                           service: demo.service.displayName, connection: demo.name)
+                                           service: demo.service.displayName, connection: demo.name, waits: waits)
             let newClient = try JamfService(demo: source, recorder: recorder)
             client = newClient
             clientKey = key
@@ -237,6 +267,7 @@ final class JamfStore {
                 return .unavailable("The device reported no UDID")
             }
         }
+        if demoConnection == nil, let connectionProblem { return .failed(connectionProblem) }
         guard isConfigured else { return .notConfigured }
         return lookupStates[query] ?? .loading
     }
@@ -244,6 +275,7 @@ final class JamfStore {
     /// Starts a lookup for the device unless one already ran or is running.
     func lookupIfNeeded(for device: USBDevice) {
         guard let query = device.jamfQuery, lookupStates[query] == nil else { return }
+        computerLookups[query] = device.computerLookup
         performLookup(query)
     }
 
@@ -251,6 +283,7 @@ final class JamfStore {
     func refresh(for device: USBDevice) {
         guard let query = device.jamfQuery else { return }
         lookupStates[query] = nil
+        computerLookups[query] = device.computerLookup
         performLookup(query)
     }
 
@@ -267,15 +300,19 @@ final class JamfStore {
         inFlight.insert(query)
         lookupStates[query] = .loading
         let generation = configurationGeneration
+        let computers = computerLookups[query] ?? .skip
 
         Task {
             let state: JamfLookupState
             do {
-                switch try await client.lookup(query) {
+                switch try await client.lookup(query, computers: computers) {
                 case .found(let record): state = .found(record)
                 case .noMatch: state = .noMatch
                 case .multipleMatches(let count): state = .multipleMatches(count)
                 }
+            } catch is CancellationError {
+                // Stop in the retry-wait status: not sent again.
+                state = .failed(Self.stoppedText)
             } catch {
                 // JTKit's message (status, Jamf's error, Trace ID, hints). It
                 // can hold the server's answer: private in the system log.
@@ -293,6 +330,9 @@ final class JamfStore {
         }
     }
 
+    /// A lookup or save ended with Stop while it waited to try again.
+    nonisolated static let stoppedText = "Stopped while waiting to try again. Choose Retry Lookup to look it up again."
+
     /// Writes a new asset tag to Jamf Pro or Jamf School and updates the
     /// cached record. Returns nil on success, or the message to show.
     func saveAssetTag(_ tag: String, record: JamfDeviceRecord, for device: USBDevice) async -> String? {
@@ -303,7 +343,8 @@ final class JamfStore {
             return error.localizedDescription
         }
         guard let query = device.jamfQuery, let client = active else {
-            return JamfLookupState.noConnectionText
+            return demoConnection == nil ? connectionProblem ?? JamfLookupState.noConnectionText
+                : JamfLookupState.noConnectionText
         }
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = configurationGeneration
@@ -313,7 +354,7 @@ final class JamfStore {
             // If that read fails, the saved value is shown as typed.
             var updated = record
             updated.assetTag = trimmed.isEmpty ? nil : trimmed
-            if case .found(let stored)? = try? await client.lookup(query), stored.jamfID == record.jamfID {
+            if case .found(let stored)? = try? await client.lookup(query, computers: record.kind == .computer ? .always : device.computerLookup), stored.jamfID == record.jamfID {
                 updated = stored
             }
             // Saved on the server that was in use; if the connection changed
@@ -322,6 +363,8 @@ final class JamfStore {
                 lookupStates[query] = .found(updated)
             }
             return nil
+        } catch is CancellationError {
+            return "Stopped while waiting to try again. The asset tag wasn’t saved."
         } catch {
             return error.localizedDescription
         }
@@ -331,7 +374,8 @@ final class JamfStore {
     /// A secret typed in the editor is used instead of the stored one.
     /// Always the real connection and the real network, also in demo mode.
     func testConnection(_ record: JamfConnection, typedSecret: String?) async throws -> String {
-        let secret = typedSecret ?? connections.secret(for: record) ?? ""
+        if let problem = Self.addressProblem(for: record) { throw JamfSetupError(message: problem) }
+        let secret = try typedSecret ?? connections.readSecret(for: record) ?? ""
         guard let configuration = Self.configuration(for: record, secret: secret) else {
             let missing = switch record.service {
             case .jamfPlatform: "Fill in the client ID, client secret and a valid environment ID first."

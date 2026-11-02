@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import JTKit
 import UniformTypeIdentifiers
 
 /// Turns the device list (the session log) into a CSV export and a plain
@@ -127,6 +128,12 @@ extension SessionExport {
         panel.allowedContentTypes = [.commaSeparatedText]
         let stamp = Date.now.formatted(.iso8601.year().month().day())
         panel.nameFieldStringValue = "Serial Number Reader Session \(stamp).csv"
+        // Under the live-check switch the app's own files go to the run's
+        // folder, never their usual place (JTKit's `LiveLaunch`).
+        if let folder = LiveLaunch.appFilesFolder("Exports") {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            panel.directoryURL = folder
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try csvData(rows).write(to: url, options: .atomic)

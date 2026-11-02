@@ -17,9 +17,10 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 - **Jamf Pro and Jamf School lookup** by serial or UDID — Jamf Pro directly or through the **Jamf Platform API** — showing the device’s Jamf name, serial, UDID, model, OS version, managed state, assigned user and last inventory date, with an **editable asset tag** and a link to the record.
 - **Several saved connections** — switch between them with the picker in the toolbar or the **Connection** menu.
 - **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU a USB-C device, even when it’s unresponsive.
-- **Session export** — save every device from the session as CSV (**File › Export Session…**, ⌘E), or copy all serial numbers at once (**File › Copy All Serial Numbers**, ⇧⌘C). **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click) tidy the list.
+- **Session export** — save every device from the session as CSV (**File › Export Session…**, ⌘E), or copy all serial numbers at once (**File › Copy All Serial Numbers**, ⇧⌘C). **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click, the Delete key, or **Device › Remove from List**, ⌘⌫) tidy the list.
 - **Activity log** — **Window › Activity Log** (⇧⌘L) lists every sign-in, lookup, asset tag change, connection test and USB action. **Export for Bug Report…** replaces serial numbers, UDIDs, ECIDs, usernames and IP addresses with placeholders; **Export Unmasked…** and **Copy Entry** keep them. The log is kept in memory only.
 - **Demo Mode** — try the app without a device or a Jamf tenant: a pretend iPhone and the sample Jamf servers “Contoso Jamf Pro (Demo)” and “Contoso Academy (Demo)”. Every action on the pretend iPhone is simulated; nothing is sent to a device or a tenant, and real devices are hidden while it’s on. Turn it on with **Try Demo Mode** in the sidebar when no device is connected, or with **Demo Mode** in the toolbar’s connection picker or the **Connection** menu (dimmed while an action or restore runs).
+- **Device menu** — the selected device’s actions (Enter Recovery, Boot to Normal, Restart, Enter DFU, Restore…, Revive…, Remove Trust, Retry Lookup ⌘R) are also in the menu bar, for the keyboard and Full Keyboard Access.
 - **Copy buttons** and a scannable **QR code** for the serial number.
 
 ## Requirements
@@ -52,7 +53,7 @@ Enter Recovery, Boot to Normal, Restore and Revive need no administrator passwor
 
 Open **Settings › Connections** and add a connection with **+**. **Test Connection** checks it. Each connection is one of:
 
-- **Jamf Pro**, signing in with an **API client** or a **Username and password** — enter your Jamf Pro server URL and credentials. The account needs read access to mobile devices and computers (and update access to edit asset tags).
+- **Jamf Pro**, signing in with an **API client** or a **Username and password** — enter your Jamf Pro server URL and credentials. The account needs read access to mobile devices, and to computers for looking up Macs (and update access to edit asset tags).
 - **Jamf Platform API** — create an integration in [Jamf Account](https://account.jamf.com) scoped to a **platform environment**, with the `devices:read` permission (plus `devices:update` to edit asset tags). Enter its region, client ID, client secret and environment ID. The Jamf Pro URL is optional and only used for “Open in Jamf Pro” links. Integrations expire after six months.
 - **Jamf School** — enter your Jamf School URL, Network ID and an API key (Organization › Settings › API) with read access to devices, plus write access to edit asset tags.
 
@@ -67,7 +68,7 @@ Settings from versions before saved connections are converted once, automaticall
 
 ### Device model data
 
-The CPID/BDID → model mapping lives in [`AppleDeviceModels.json`](Serial%20Number%20Reader/AppleDeviceModels.json) as a bundled resource, covering iPhone 8 and later, all iPads from 2017 onward, and Apple silicon Macs from 2022 onward (the first M1 Macs aren’t listed yet; they show an unknown model in Recovery and DFU, so a Restore can only install the latest version). It can be updated without code changes.
+The CPID/BDID → model mapping lives in [`AppleDeviceModels.json`](Serial%20Number%20Reader/AppleDeviceModels.json) as a bundled resource, covering iPhone 8 and later, all iPads from 2017 onward, and every Apple silicon Mac, from the first M1 models of 2020 onward. A model that isn’t listed shows as unknown in Recovery and DFU, and a Restore can then only install the latest version. It can be updated without code changes.
 
 ### Network use
 

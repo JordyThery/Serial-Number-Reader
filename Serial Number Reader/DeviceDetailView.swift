@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage.CIFilterBuiltins
+import JTKit
 import SwiftUI
 
 struct DeviceDetailView: View {
@@ -52,6 +53,39 @@ struct DeviceDetailView: View {
         .sheet(isPresented: $showingRevive) {
             ReviveSheet(device: device, serialNumber: knownSerial, jamfName: jamfRecord?.name, restore: restore)
         }
+        // The Device menu: the same actions, on the same conditions.
+        .focusedSceneValue(\.deviceActions, menuActions)
+    }
+
+    /// What the Device menu offers for this device; nil where the button
+    /// isn't shown or is dimmed.
+    private var menuActions: DeviceMenuActions {
+        let connected = device.isConnected
+        let restoreOffered = connected && device.mode != .normal && !isBusy && restoreUnavailableReason == nil
+        let deviceID = device.id
+        return DeviceMenuActions(
+            enterRecovery: connected && offersEnterRecovery && !isBusy ? { actions.enterRecovery(device: device) } : nil,
+            bootToNormal: connected && device.mode == .recovery && !isBusy ? { actions.bootToNormal(device: device) } : nil,
+            restart: connected && !isBusy && !vdmUnavailable ? { actions.restart(device: device) } : nil,
+            enterDFU: connected && device.mode != .dfu && !isBusy && !vdmUnavailable ? { actions.enterDFU(device: device) } : nil,
+            restore: restoreOffered ? { showingRestore = true } : nil,
+            revive: restoreOffered ? { showingRevive = true } : nil,
+            removeTrust: connected && offersRemoveTrust && !isBusy && actions.isConfiguratorAvailable
+                ? { actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) } } : nil,
+            retryLookup: offersRetryLookup ? { jamf.refresh(for: device) } : nil,
+            removeFromList: connected ? nil : { monitor.removeFromList(deviceID) }
+        )
+    }
+
+    private var offersEnterRecovery: Bool { device.mode == .normal && device.udid != nil }
+    private var offersRemoveTrust: Bool { device.mode == .normal && device.isTrusted }
+
+    /// Retry Lookup is shown with a record, no match, several or a failure.
+    private var offersRetryLookup: Bool {
+        switch jamf.state(for: device) {
+        case .found, .noMatch, .multipleMatches, .failed: true
+        case .notConfigured, .unavailable, .loading: false
+        }
     }
 
     private var jamfRecord: JamfDeviceRecord? {
@@ -94,7 +128,7 @@ struct DeviceDetailView: View {
     private var powerSection: some View {
         Section {
             HStack(spacing: 10) {
-                if device.mode == .normal, device.udid != nil {
+                if offersEnterRecovery {
                     Button {
                         actions.enterRecovery(device: device)
                     } label: {
@@ -161,7 +195,7 @@ struct DeviceDetailView: View {
                     .help(restoreUnavailableReason ?? "Reinstall the operating system and keep the device’s content")
                     Spacer()
                 }
-            } else if device.isTrusted {
+            } else if offersRemoveTrust {
                 HStack {
                     Button {
                         let deviceID = device.id
@@ -182,9 +216,8 @@ struct DeviceDetailView: View {
             }
 
             if let error = actions.lastError {
-                Text(error)
+                TintedLabel(error, systemImage: "xmark.octagon.fill", tint: .red)
                     .font(.caption)
-                    .foregroundStyle(.red)
             }
         } header: {
             Text("Power")
@@ -310,12 +343,11 @@ struct DeviceDetailView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). "
+                    WarningLabel("This device generation exposes no model, ECID or serial over USB in DFU mode (it enumerates as a locked-down “Debug USB” function). "
                          + (actions.isConfiguratorAvailable
                             ? "Apple Configurator hasn’t identified it yet."
                             : "With Apple Configurator installed, Serial Number Reader identifies it automatically."))
                         .font(.callout)
-                        .foregroundStyle(.orange)
                 }
             }
             Text("The serial number is readable in Recovery mode. Follow these steps; the device will reappear here automatically.")
@@ -376,13 +408,13 @@ struct DeviceDetailView: View {
                 retryButton
 
             case .multipleMatches(let count):
-                Label("\(count) devices match in \(jamf.productName) — the record is ambiguous.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                TintedLabel("\(count) devices match in \(jamf.productName) — the record is ambiguous.",
+                            systemImage: "exclamationmark.triangle.fill", tint: .orange)
                 retryButton
 
             case .failed(let message):
-                Label(message, systemImage: "xmark.octagon")
-                    .foregroundStyle(.red)
+                TintedLabel(message, systemImage: "xmark.octagon.fill", tint: .red)
+                    .textSelection(.enabled)
                 retryButton
             }
         }
@@ -407,9 +439,8 @@ struct DeviceDetailView: View {
         }
         if let managed = record.managed {
             LabeledContent("Managed") {
-                Label(managed ? "Managed" : "Unmanaged",
-                      systemImage: managed ? "checkmark.seal" : "xmark.seal")
-                .foregroundStyle(managed ? .green : .secondary)
+                TintedLabel(managed ? "Managed" : "Unmanaged",
+                            systemImage: managed ? "checkmark.seal.fill" : "xmark.seal", tint: managed ? .green : .secondary)
             }
         }
         if record.username != nil || record.realName != nil {
@@ -499,6 +530,9 @@ struct AssetTagRow: View {
                     } label: {
                         Image(systemName: "pencil")
                             .foregroundStyle(.secondary)
+                            // the desktop minimum hit area (20 × 20 pt)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .help("Edit asset tag")
@@ -508,9 +542,8 @@ struct AssetTagRow: View {
         }
 
         if let errorMessage {
-            Text(errorMessage)
+            TintedLabel(errorMessage, systemImage: "xmark.octagon.fill", tint: .red)
                 .font(.caption)
-                .foregroundStyle(.red)
         }
     }
 
@@ -525,6 +558,33 @@ struct AssetTagRow: View {
                 isEditing = false
             }
             saving = false
+        }
+    }
+}
+
+// MARK: - Status text
+
+/// A status or error line: the symbol carries the color, the text stays in
+/// the primary color, so it's readable in light, dark and Increase Contrast
+/// (red, orange or green text at caption size is below 4.5:1 on the window
+/// background) and the meaning never rests on color alone.
+struct TintedLabel: View {
+    let text: String
+    let systemImage: String
+    let tint: Color
+
+    init(_ text: String, systemImage: String, tint: Color) {
+        self.text = text
+        self.systemImage = systemImage
+        self.tint = tint
+    }
+
+    var body: some View {
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
         }
     }
 }
@@ -557,10 +617,14 @@ struct CopyableRow: View {
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .foregroundStyle(copied ? .green : .secondary)
+                        // the desktop minimum hit area (20 × 20 pt)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .help("Copy \(label)")
                 .accessibilityLabel("Copy \(label)")
+                .accessibilityValue(copied ? "Copied" : "")
 
                 if showsQR {
                     Button {
@@ -568,6 +632,9 @@ struct CopyableRow: View {
                     } label: {
                         Image(systemName: "qrcode")
                             .foregroundStyle(.secondary)
+                            // the desktop minimum hit area (20 × 20 pt)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .help("Show \(label) as a scannable QR code")
@@ -620,5 +687,59 @@ struct QRCodeView: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+// MARK: - Device menu
+
+/// The selected device's actions for the Device menu (`DeviceMenu`), from
+/// its detail view. A nil action is dimmed in the menu.
+struct DeviceMenuActions {
+    var enterRecovery: (() -> Void)?
+    var bootToNormal: (() -> Void)?
+    var restart: (() -> Void)?
+    var enterDFU: (() -> Void)?
+    var restore: (() -> Void)?
+    var revive: (() -> Void)?
+    var removeTrust: (() -> Void)?
+    var retryLookup: (() -> Void)?
+    var removeFromList: (() -> Void)?
+}
+
+private struct DeviceActionsKey: FocusedValueKey {
+    typealias Value = DeviceMenuActions
+}
+
+extension FocusedValues {
+    var deviceActions: DeviceMenuActions? {
+        get { self[DeviceActionsKey.self] }
+        set { self[DeviceActionsKey.self] = newValue }
+    }
+}
+
+/// The menu bar's Device menu: the selected device's actions, dimmed when
+/// no device is selected or an action isn't possible now.
+struct DeviceMenu: View {
+    @FocusedValue(\.deviceActions) private var actions
+
+    var body: some View {
+        item("Enter Recovery", actions?.enterRecovery)
+        item("Boot to Normal", actions?.bootToNormal)
+        item("Restart", actions?.restart)
+        item("Enter DFU", actions?.enterDFU)
+        Divider()
+        item("Restore…", actions?.restore)
+        item("Revive…", actions?.revive)
+        item("Remove Trust", actions?.removeTrust)
+        Divider()
+        item("Retry Lookup", actions?.retryLookup)
+            .keyboardShortcut("r")
+        item("Remove from List", actions?.removeFromList)
+            .keyboardShortcut(.delete)
+    }
+
+    private func item(_ title: String, _ action: (() -> Void)?) -> some View {
+        Button(title) { action?() }
+            .disabled(action == nil)
     }
 }

@@ -8,6 +8,8 @@
 # (Jamf Pro over the Platform API) and jamfschool-readonly, read only;
 # jamf-test-a over the Platform API (one JTKTEST mobile device record, removed
 # afterwards); jamfpro-production, read only, only with --include-production.
+# Live UI tests drive the real app without a USB device: Test Connection in
+# Settings › Connections on jamfpro-readonly, jamfschool-readonly and jamf-test-a.
 # No USB action ever runs: under tests the app refuses them all, and any
 # attempt fails the run.
 cd "$(dirname "$0")/.." || exit 1
@@ -22,7 +24,10 @@ SMOKE_CLASS="DemoSmokeUITests"
 SMOKE_FILE="$PWD/Serial Number Reader UITests/DemoSmokeUITests.swift"
 SIGNIN_TEST="Serial Number Reader Tests/LiveSignInTests"
 LIVE_TESTS=("Serial Number Reader Tests/LiveLookupTests/readOnlyLookups()"
-            "Serial Number Reader Tests/LiveLookupTests/assetTag()")
+            "Serial Number Reader Tests/LiveLookupTests/assetTag()"
+            "Serial Number Reader UITests/LiveUITests/testConnectionJamfProReadOnly"
+            "Serial Number Reader UITests/LiveUITests/testConnectionJamfSchoolReadOnly"
+            "Serial Number Reader UITests/LiveUITests/testConnectionJamfTestA")
 CLEANUP_TEST="Serial Number Reader Tests/LiveCleanupTests"
 ROLES=(jamfpro-readonly jamfschool-readonly jamf-test-a jamfpro-production)
 # role:service:item, read from the Keychain service the allow-list names.

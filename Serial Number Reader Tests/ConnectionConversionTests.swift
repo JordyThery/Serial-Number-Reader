@@ -61,7 +61,7 @@ final class ConnectionConversionTests {
         var values = [String: String]()
         for key in keys { values["defaults:\(key)"] = defaults.string(forKey: key) ?? "<missing>" }
         for method in Method.allCases {
-            values["keychain:\(method.secretAccount)"] = secrets.secret(for: method.secretAccount) ?? "<missing>"
+            values["keychain:\(method.secretAccount)"] = (try? secrets.readSecret(for: method.secretAccount)) ?? "<missing>"
         }
         return values
     }
@@ -79,13 +79,13 @@ final class ConnectionConversionTests {
         let pro = try #require(store.record(id: Method.clientCredentials.connectionID))
         #expect(pro == JamfConnection(id: pro.id, name: "Jamf Pro (API client)", service: .jamfPro, signIn: .apiClient,
                                       serverURL: "https://yourorg.jamfcloud.com", clientID: "pro-client"))
-        #expect(store.secret(for: pro.connection) == "pro-secret")
+        #expect((try store.readSecret(for: pro.connection)) == "pro-secret")
 
         let basic = try #require(store.record(id: Method.basic.connectionID))
         #expect(basic == JamfConnection(id: basic.id, name: "Jamf Pro (username and password)", service: .jamfPro,
                                         signIn: .usernamePassword, serverURL: "https://yourorg.jamfcloud.com",
                                         username: "admin"))
-        #expect(store.secret(for: basic.connection) == "password")
+        #expect((try store.readSecret(for: basic.connection)) == "password")
 
         let platform = try #require(store.record(id: Method.platform.connectionID))
         #expect(platform == JamfConnection(id: platform.id, name: "Jamf Platform API", service: .jamfPlatform,
@@ -93,13 +93,13 @@ final class ConnectionConversionTests {
                                            environmentID: "E77C1408-10C8-4007-B177-ABC9157FBCAA",
                                            jamfProWebURL: "https://yourorg.jamfcloud.com",
                                            clientID: "platform-client"))
-        #expect(store.secret(for: platform.connection) == "platform-secret")
+        #expect((try store.readSecret(for: platform.connection)) == "platform-secret")
 
         let school = try #require(store.record(id: Method.jamfSchool.connectionID))
         #expect(school == JamfConnection(id: school.id, name: "Jamf School", service: .jamfSchool,
                                          signIn: .schoolAPIKey, serverURL: "https://yourschool.jamfcloud.com",
                                          clientID: "012345"))
-        #expect(store.secret(for: school.connection) == "school-key")
+        #expect((try store.readSecret(for: school.connection)) == "school-key")
 
         // the shared editor accepts every converted connection as it is
         for record in store.records {
@@ -109,11 +109,11 @@ final class ConnectionConversionTests {
     }
 
     @Test("Secrets are copied to the connection's own Keychain account")
-    func secretsGoToConnectionAccounts() {
+    func secretsGoToConnectionAccounts() throws {
         fillInEverything()
         _ = run()
         for method in Method.allCases {
-            #expect(secrets.secret(for: method.connectionID.uuidString) == secrets.secret(for: method.secretAccount))
+            #expect((try secrets.readSecret(for: method.connectionID.uuidString)) == (try secrets.readSecret(for: method.secretAccount)))
         }
         #expect(secrets.all.count == 8)
     }
@@ -191,7 +191,7 @@ final class ConnectionConversionTests {
     // MARK: Once, without duplicates
 
     @Test("Running it twice converts once and reads nothing the second time")
-    func runningTwice() {
+    func runningTwice() throws {
         fillInEverything()
         #expect(run() == .converted(added: 4, activeID: Method.platform.connectionID))
         let listAfterFirst = defaults.data(forKey: JamfConnectionStore.listKey)
@@ -205,7 +205,7 @@ final class ConnectionConversionTests {
         #expect(run(into: store) == .alreadyDone)
         #expect(store.records.count == 4)
         #expect(defaults.data(forKey: JamfConnectionStore.listKey) == listAfterFirst)
-        #expect(secrets.secret(for: Method.clientCredentials.connectionID.uuidString)
+        #expect((try secrets.readSecret(for: Method.clientCredentials.connectionID.uuidString))
                 == secretsAfterFirst[Method.clientCredentials.connectionID.uuidString])
     }
 
@@ -243,7 +243,7 @@ final class ConnectionConversionTests {
         #expect(run(into: store) == .converted(added: 3, activeID: Method.platform.connectionID))
         #expect(store.records.count == 4)
         #expect(store.record(id: partial.id) == partial)
-        #expect(store.secret(for: partial.connection) == "already-copied")
+        #expect((try store.readSecret(for: partial.connection)) == "already-copied")
     }
 
     @Test("A list that already holds other connections is left alone")
@@ -280,6 +280,26 @@ final class ConnectionConversionTests {
         let next = makeStore()
         #expect(run(into: next) == .converted(added: 4, activeID: Method.platform.connectionID))
         #expect(next.records.count == 4)
+    }
+
+    @Test("An old secret the Keychain can't read: nothing converted, the next launch converts it with its secret")
+    func keychainReadFailsThenRetries() throws {
+        fillInEverything()
+        secrets.refusesReads = true
+        let store = makeStore()
+
+        guard case .failed = run(into: store) else {
+            Issue.record("expected the conversion to wait for the next launch")
+            return
+        }
+        #expect(store.records.isEmpty)
+        #expect(defaults.object(forKey: LegacySettingsConversion.markerKey) == nil)
+
+        secrets.refusesReads = false
+        let next = makeStore()
+        #expect(run(into: next) == .converted(added: 4, activeID: Method.platform.connectionID))
+        let pro = try #require(next.record(id: Method.clientCredentials.connectionID))
+        #expect((try next.readSecret(for: pro.connection)) == "pro-secret")
     }
 
     @Test("An unreadable list is not converted into and not replaced")
@@ -324,7 +344,7 @@ final class ConnectionConversionTests {
 
         func configuration(_ method: Method) throws -> JamfConfiguration {
             let record = try #require(store.record(id: method.connectionID))
-            return try #require(JamfStore.configuration(for: record, secret: store.secret(for: record.connection) ?? ""))
+            return try #require(JamfStore.configuration(for: record, secret: (try store.readSecret(for: record.connection)) ?? ""))
         }
         let platform = try configuration(.platform)
         #expect(platform.connection?.jamfBaseURL?.absoluteString == "https://us.api.jamfcloud.com")

@@ -50,7 +50,7 @@ struct JamfSchoolTests {
                  "lastCheckin":{"date":"2026-10-25 10:22:25.000000","timezone_type":3,"timezone":"UTC"}}}
                 """#)
         }
-        let result = try await service(server).lookup(.serialNumber("PLACEHOLDR06"))
+        let result = try await service(server).lookup(.serialNumber("PLACEHOLDR06"), computers: .always)
         guard case .found(let record) = result else {
             Issue.record("Expected a record, got \(result)")
             return
@@ -70,19 +70,19 @@ struct JamfSchoolTests {
     @Test("No device in the list, or DeviceNotFound, means no match")
     func noMatch() async throws {
         let empty = MockServer { _ in .json(200, #"{"code":200,"count":0,"devices":[]}"#) }
-        #expect(try await service(empty).lookup(.serialNumber("PLACEHOLDR06")) == .noMatch)
+        #expect(try await service(empty).lookup(.serialNumber("PLACEHOLDR06"), computers: .always) == .noMatch)
         let missing = MockServer { _ in .json(404, #"{"code":404,"message":"DeviceNotFound"}"#) }
-        #expect(try await service(missing).lookup(.udid("00008130-001A2B3C4D5E6F70")) == .noMatch)
+        #expect(try await service(missing).lookup(.udid("00008130-001A2B3C4D5E6F70"), computers: .always) == .noMatch)
     }
 
     @Test("Another 404 points at the URL; a failure under HTTP 200 is an error")
     func errors() async throws {
         let wrongURL = MockServer { _ in .json(404, "<html>Not Found</html>", headers: ["Content-Type": "text/html"]) }
-        let notFound = await #expect(throws: JamfSchool.APIError.self) { _ = try await service(wrongURL).lookup(.udid("00008130-0001")) }
+        let notFound = await #expect(throws: JamfSchool.APIError.self) { _ = try await service(wrongURL).lookup(.udid("00008130-0001"), computers: .always) }
         #expect(notFound?.message().contains("Check the Jamf School server URL, e.g. https://yourschool.jamfcloud.com.") == true)
 
         let inBody = MockServer { _ in .json(200, #"{"code":400,"message":"Bad request"}"#) }
-        await #expect(throws: JamfSchool.APIError.self) { _ = try await service(inBody).lookup(.udid("00008130-0001")) }
+        await #expect(throws: JamfSchool.APIError.self) { _ = try await service(inBody).lookup(.udid("00008130-0001"), computers: .always) }
     }
 
     @Test("A refused API key gets JTKit's hint and the app's")

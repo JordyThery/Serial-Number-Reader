@@ -1,4 +1,5 @@
 import AppKit
+import JTKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -61,8 +62,7 @@ struct RestoreSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Label("All content and settings on the device are erased.", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                WarningLabel("All content and settings on the device are erased.")
                 Text("Activation Lock stays in place. Devices enrolled through Automated Device Enrollment re-enroll in Jamf during setup. The first restore of a version downloads several GB. Keep the device connected and Serial Number Reader open until it finishes.")
                     .foregroundStyle(.secondary)
             }
@@ -72,11 +72,9 @@ struct RestoreSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                Button(role: .destructive, action: startRestore) {
-                    Text("Erase & Restore")
-                        .foregroundStyle(canRestore ? .red : .secondary)
-                }
-                .disabled(!canRestore)
+                // The system draws a destructive button and its dimmed state.
+                Button("Erase & Restore", role: .destructive, action: startRestore)
+                    .disabled(!canRestore)
             }
         }
         .padding(20)
@@ -92,7 +90,7 @@ struct RestoreSheet: View {
 
     private var osName: String {
         if productType?.hasPrefix("iPad") == true { return "iPadOS" }
-        if productType?.hasPrefix("Mac") == true { return "macOS" }
+        if let productType, ModelInfo(identifier: productType, marketingName: nil).isMac { return "macOS" }
         return "iOS"
     }
 
@@ -105,21 +103,18 @@ struct RestoreSheet: View {
             }
             .font(.caption)
         } else if let ipswError {
-            Label(ipswError, systemImage: "xmark.octagon.fill")
-                .foregroundStyle(.red)
+            TintedLabel(ipswError, systemImage: "xmark.octagon.fill", tint: .red)
                 .font(.caption)
         } else if let info = ipswInfo {
             VStack(alignment: .leading, spacing: 2) {
-                Label("\(osName) \(info.productVersion) (\(info.buildVersion)) — supports this device",
-                      systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                TintedLabel("\(osName) \(info.productVersion) (\(info.buildVersion)) — supports this device",
+                            systemImage: "checkmark.circle.fill", tint: .green)
                 switch ipswSigned {
                 case .some(true):
                     Label("Signed by Apple", systemImage: "checkmark.seal")
                         .foregroundStyle(.secondary)
                 case .some(false):
-                    Label("No longer signed by Apple — the restore would fail", systemImage: "xmark.seal.fill")
-                        .foregroundStyle(.red)
+                    TintedLabel("No longer signed by Apple — the restore would fail", systemImage: "xmark.seal.fill", tint: .red)
                 case .none:
                     Label("Signing status unknown (betas aren’t listed) — Apple decides when the restore starts",
                           systemImage: "questionmark.circle")
@@ -301,7 +296,8 @@ struct RestoreBanner: View {
                             .font(.headline)
                         Text(detail(for: job))
                             .font(.callout)
-                            .foregroundStyle(job.state.isFailure ? .red : .secondary)
+                            // the red icon beside it marks a failure; the text stays readable
+                            .foregroundStyle(job.state.isFailure ? .primary : .secondary)
                             .lineLimit(2)
                     }
                     Spacer()

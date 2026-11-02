@@ -9,7 +9,9 @@ import JTKit
 /// - The old UserDefaults keys and Keychain items are only read, never
 ///   changed or deleted, so an older build keeps working.
 /// - It runs once: `jamfConnectionsConverted` is set after the connections
-///   were saved, and the old settings are not read again after that.
+///   were saved, and the old settings are not read again after that. When an
+///   old secret can't be read from the Keychain, nothing is saved and the
+///   marker isn't set: it runs again at the next launch.
 /// - It only adds. Each sign-in method converts to a fixed ID, so a run that
 ///   stopped halfway is completed without duplicates; a list that already
 ///   holds other connections is left alone.
@@ -109,7 +111,9 @@ nonisolated enum LegacySettingsConversion {
     /// Each method with its own setting or its secret filled in becomes one,
     /// and so does the method in use when any of its settings is filled in.
     /// That one becomes active, or else the first one.
-    static func plan(defaults: UserDefaults, secrets: any SecretStore) -> Plan {
+    /// - Throws: when an old secret may be stored but the Keychain can't
+    ///   read it (refused, locked): the conversion then waits for the next launch.
+    static func plan(defaults: UserDefaults, secrets: any SecretStore) throws -> Plan {
         func value(_ key: String) -> String {
             defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
@@ -117,7 +121,7 @@ nonisolated enum LegacySettingsConversion {
 
         var items = [Item]()
         for method in Method.allCases {
-            let secret = secrets.secret(for: method.secretAccount).flatMap { $0.isEmpty ? nil : $0 }
+            let secret = try secrets.readSecret(for: method.secretAccount).flatMap { $0.isEmpty ? nil : $0 }
             let keys = method == inUse ? method.ownKeys + method.sharedKeys : method.ownKeys
             guard secret != nil || keys.contains(where: { !value($0).isEmpty }) else { continue }
             items.append(Item(record: record(for: method, value: value), secret: secret))
@@ -143,16 +147,25 @@ nonisolated enum LegacySettingsConversion {
             return .skippedExistingList
         }
 
-        let plan = plan(defaults: defaults, secrets: secrets)
+        // A Keychain that can't be read is not "no secret": stop without the
+        // marker, so the next launch tries again instead of converting a
+        // connection without its secret.
+        let plan: Plan
+        do {
+            plan = try self.plan(defaults: defaults, secrets: secrets)
+        } catch {
+            log("[Conversion] not run: \(error.localizedDescription)")
+            return .failed(error.localizedDescription)
+        }
         var added = 0
         // Converted earlier by a run that stopped halfway: already complete,
         // as a record is saved only after its secret.
         for item in plan.items where store.record(id: item.record.id) == nil {
-            var newSecrets = [ConnectionSecretKind: String]()
-            if let secret = item.secret, store.secret(for: item.record.connection) == nil {
-                newSecrets[.main] = secret
-            }
             do {
+                var newSecrets = [ConnectionSecretKind: String]()
+                if let secret = item.secret, try store.readSecret(for: item.record.connection) == nil {
+                    newSecrets[.main] = secret
+                }
                 try store.save(item.record, secrets: newSecrets)
                 added += 1
             } catch {

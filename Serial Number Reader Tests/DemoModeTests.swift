@@ -292,7 +292,7 @@ struct DemoJamfTests {
         defer { settings.remove() }
         let defaults = settings.defaults
         let saved = JamfConnection(name: "Real", service: .jamfPro, signIn: .apiClient,
-                                   serverURL: "pro.example.com", clientID: "client")
+                                   serverURL: "https://pro.example.com", clientID: "client")
         try store.connections.connections.save(saved, secrets: [.main: "secret"])
         store.connections.activeID = saved.id
         let list = defaults.data(forKey: JamfConnectionStore.listKey)

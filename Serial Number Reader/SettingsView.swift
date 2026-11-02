@@ -33,9 +33,9 @@ struct SettingsView: View {
     static func help(for record: JamfConnection) -> String {
         switch (record.service, record.signIn) {
         case (.jamfPro, .usernamePassword):
-            "A classic Jamf Pro user account with permission to read mobile devices and computers (update permission is needed to edit asset tags). The password is stored in the Keychain."
+            "A classic Jamf Pro user account with permission to read mobile devices, and computers to look up Macs (update permission is needed to edit asset tags). The password is stored in the Keychain."
         case (.jamfPro, _):
-            "Create an API client in Jamf Pro under Settings → System → API roles and clients. It needs “Read Mobile Devices” and “Read Computers” privileges — plus “Update Mobile Devices” / “Update Computers” to edit asset tags. The client secret is stored in the Keychain."
+            "Create an API client in Jamf Pro under Settings → System → API roles and clients. It needs the “Read Mobile Devices” privilege, “Read Computers” to look up Macs — plus “Update Mobile Devices” / “Update Computers” to edit asset tags. The client secret is stored in the Keychain."
         case (.jamfPlatform, _):
             "Create an integration in Jamf Account scoped to a platform environment, in the region your Jamf Pro is hosted in. It needs the devices:read permission, plus devices:update to edit asset tags. Copy the environment ID from the integration’s details. Integrations expire after six months. The Jamf Pro web address is optional and used only for “Open in Jamf Pro” links. The client secret is stored in the Keychain."
         case (.jamfSchool, _):
