@@ -107,6 +107,11 @@ nonisolated enum LegacySettingsConversion {
         }
     }
 
+    /// What Settings › Connections says when the conversion didn't finish.
+    static func notice(_ reason: String) -> String {
+        "Your Jamf settings from an earlier version weren’t converted: \(reason) Serial Number Reader tries again the next time it opens. If macOS asks for access to the Keychain, choose Allow."
+    }
+
     /// The connections the old settings describe, without saving anything.
     /// Each method with its own setting or its secret filled in becomes one,
     /// and so does the method in use when any of its settings is filled in.

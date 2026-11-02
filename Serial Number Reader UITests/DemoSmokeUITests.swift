@@ -220,7 +220,10 @@ final class DemoSmokeUITests: JTKitUITestCase {
     }
 
     /// Copy puts the serial number on the clipboard; QR shows it as a code.
+    /// Whatever was on the clipboard is put back afterwards.
     func test11CopyAndQRCode() {
+        let saved = ClipboardContents.save()
+        defer { saved.restore() }
         selectPretendIPhone()
         waitForRecord()
         let copy = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Copy Serial Number'")).firstMatch
@@ -228,7 +231,6 @@ final class DemoSmokeUITests: JTKitUITestCase {
         let copied = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == 'Copied'"), object: copy)
         XCTAssertEqual(XCTWaiter.wait(for: [copied], timeout: 5), .completed, "Copy didn't confirm")
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "ZZDEMOP42RX", "The clipboard doesn't hold the serial number")
-        NSPasteboard.general.clearContents()
 
         tap(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Show Serial Number'")).firstMatch)
         let code = app.popovers.firstMatch
@@ -350,6 +352,52 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(save.waitForNonExistence(timeout: 10), "The Save panel didn't close")
     }
 
+    /// Behind the Restore sheet the Device menu offers no action. (The
+    /// wrapping of the action buttons in a narrow window is a unit test:
+    /// synthesized drags don't resize windows here.)
+    func test21DeviceMenuBehindSheet() {
+        selectPretendIPhone()
+        enterRecovery()
+        XCTAssertTrue(any("Actions").exists, "No Actions section")
+
+        tap(button("Restore…"), timeout: 10)
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10), "The Restore sheet didn't open")
+        // Behind the sheet, the Device menu offers no action.
+        let menu = app.menuBars.menuBarItems["Device"]
+        tap(menu)
+        for item in ["Boot to Normal", "Restart", "Enter DFU", "Restore…", "Revive…"] {
+            XCTAssertFalse(menu.menuItems[item].isEnabled, "Device › \(item) is enabled behind the Restore sheet")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+        tap(sheet.buttons["Cancel"])
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+    }
+
+    /// While an asset tag is typed, Device › Remove from List (⌘⌫, which also
+    /// deletes text) is off for the disconnected device being edited.
+    func test22RemoveFromListWaitsForAssetTagEdit() {
+        selectPretendIPhone()
+        waitForRecord()
+        enterRecovery()
+        // the booted row it left, disconnected, with its Jamf record
+        rows.element(boundBy: 1).click()
+        waitForRecord()
+        let menu = app.menuBars.menuBarItems["Device"]
+        tap(menu)
+        XCTAssertTrue(menu.menuItems["Remove from List"].isEnabled, "Remove from List is off for a disconnected device")
+        app.typeKey(.escape, modifierFlags: [])
+
+        tap(button("Edit Asset Tag"), timeout: 10)
+        tap(menu)
+        XCTAssertFalse(menu.menuItems["Remove from List"].isEnabled, "Remove from List is on while the asset tag is edited")
+        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey(.escape, modifierFlags: [])
+        tap(menu)
+        XCTAssertTrue(menu.menuItems["Remove from List"].isEnabled, "Remove from List stayed off after the edit")
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
     /// Turning Demo Mode off takes the pretend iPhone and the sidebar note away.
     func test20DemoModeOff() {
         selectPretendIPhone()
@@ -357,5 +405,29 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(rows.firstMatch.waitForNonExistence(timeout: 10), "The pretend iPhone is still listed")
         XCTAssertFalse(anyContaining("Real devices aren’t shown in Demo Mode").exists, "The demo note is still shown")
         XCTAssertTrue(anyContaining("Connect an iPhone, iPad or Mac").waitForExistence(timeout: 5), "No empty-list guidance")
+    }
+}
+
+/// The clipboard as it was before a test that copies, put back afterwards,
+/// so the release check doesn't take what the person running it had copied.
+private struct ClipboardContents {
+    private let items: [[NSPasteboard.PasteboardType: Data]]
+
+    static func save() -> ClipboardContents {
+        let items = (NSPasteboard.general.pasteboardItems ?? []).map { item in
+            Dictionary(uniqueKeysWithValues: item.types.compactMap { type in item.data(forType: type).map { (type, $0) } })
+        }
+        return ClipboardContents(items: items)
+    }
+
+    func restore() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let restored = items.map { saved -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in saved { item.setData(data, forType: type) }
+            return item
+        }
+        if !restored.isEmpty { pasteboard.writeObjects(restored) }
     }
 }

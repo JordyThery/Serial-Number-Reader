@@ -16,12 +16,10 @@ nonisolated enum JamfQuery: Hashable, Sendable {
 /// Whether a Jamf Pro lookup that finds no mobile device also asks for a
 /// computer, which needs "Read Computers".
 nonisolated enum ComputerLookup: Hashable, Sendable {
-    /// Not a Mac: an iPhone-only API client must still see "No match".
+    /// Not a Mac: an iPhone-only API client must still see "No match", and
+    /// nothing refused lands in the activity log.
     case skip
-    /// Perhaps a Mac (identified in DFU, model known as an iPhone or iPad):
-    /// a refusal (403) means no match, not a failed lookup.
-    case ifPermitted
-    /// A Mac, or a device identified in DFU whose model is unknown.
+    /// A Mac, or a device in Recovery or DFU whose model isn't known.
     case always
 }
 
@@ -137,13 +135,17 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// Whether its Jamf Pro lookup also looks for a computer: only when it
-    /// could be a Mac, i.e. its model is a Mac ("Mac…", or "iMac…"), or it
-    /// was identified in DFU (Macs in DFU get their UDID from Configurator).
+    /// Whether its Jamf Pro lookup also looks for a computer: whenever it
+    /// could be a Mac. A known model decides (a Mac: yes; an iPhone or iPad:
+    /// no). Without one, a device in Recovery or DFU may be a Mac newer than
+    /// the model list, so it is looked for; a booted device is never a Mac (a
+    /// booted Mac doesn't appear on USB).
     var computerLookup: ComputerLookup {
-        if modelInfo?.isMac == true { return .always }
-        guard mode == .dfu, jamfQuery != nil else { return .skip }
-        return modelInfo == nil ? .always : .ifPermitted
+        if let modelInfo { return modelInfo.isMac ? .always : .skip }
+        switch mode {
+        case .recovery, .dfu: return .always
+        case .normal: return .skip
+        }
     }
 
     /// The Jamf Pro or Jamf School lookup this device supports, if any.

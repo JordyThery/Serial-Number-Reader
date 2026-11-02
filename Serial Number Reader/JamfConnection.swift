@@ -80,6 +80,11 @@ final class JamfConnectionStore {
         didSet { defaults.set(activeID?.uuidString, forKey: Self.activeKey) }
     }
 
+    /// Why the settings of an earlier version weren't converted at this
+    /// launch (e.g. the Keychain refused to read an old secret), for Settings
+    /// › Connections; nil when there was nothing to convert or it worked.
+    let conversionProblem: String?
+
     /// - Parameters:
     ///   - defaults: where the list, the connection in use and the old settings are.
     ///   - secrets: where secrets are kept, old and new; the app's Keychain items by default.
@@ -104,6 +109,11 @@ final class JamfConnectionStore {
         let conversion: LegacySettingsConversion.Outcome = LiveLaunch.isSwitched
             ? .alreadyDone
             : LegacySettingsConversion.run(defaults: defaults, secrets: secrets, into: connections, log: log)
+        if case .failed(let reason) = conversion {
+            conversionProblem = LegacySettingsConversion.notice(reason)
+        } else {
+            conversionProblem = nil
+        }
         let stored = defaults.string(forKey: Self.activeKey).flatMap(UUID.init)
         if let stored, connections.record(id: stored) != nil {
             activeID = stored

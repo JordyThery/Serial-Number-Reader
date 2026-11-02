@@ -68,6 +68,8 @@ struct RestoreSheet: View {
             }
             .font(.callout)
 
+            // the buttons stay at the bottom when the sheet is made taller
+            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -78,7 +80,9 @@ struct RestoreSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 500)
+        // Resizable: wider for a long IPSW name, taller for larger text.
+        .frame(minWidth: 460, idealWidth: 500, maxWidth: 900, maxHeight: .infinity, alignment: .topLeading)
+        .background(ResizableSheetWindow())
         .task { await loadLatest() }
         .restoreRefusalAlert($refusal)
     }
@@ -217,6 +221,8 @@ struct ReviveSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // the buttons stay at the bottom when the sheet is made taller
+            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -235,7 +241,9 @@ struct ReviveSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        // Resizable, as the Restore sheet.
+        .frame(minWidth: 420, idealWidth: 460, maxWidth: 900, maxHeight: .infinity, alignment: .topLeading)
+        .background(ResizableSheetWindow())
         .restoreRefusalAlert($refusal)
     }
 }
@@ -373,5 +381,21 @@ private extension RestoreController.Job.State {
     var isFailure: Bool {
         if case .failed = self { return true }
         return false
+    }
+}
+
+// MARK: - Resizable sheet
+
+/// Lets a sheet's window be resized by dragging its edges, within its
+/// content's frame: a SwiftUI sheet's window isn't resizable by itself.
+struct ResizableSheetWindow: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { WindowWatcher() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class WindowWatcher: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.styleMask.insert(.resizable)
+        }
     }
 }

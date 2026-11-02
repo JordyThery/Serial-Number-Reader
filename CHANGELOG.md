@@ -14,6 +14,7 @@
   Restore can use a specific IPSW.
 - When Jamf asks the app to wait before trying a request again, a bar above
   the device details says so, with a Stop button.
+- The Restore and Revive windows can be resized.
 
 ### Fixed
 
@@ -25,13 +26,22 @@
   address.” Changing it to https:// in Settings keeps the stored secret.
 - If the Keychain couldn’t be read when the app first converted the settings
   of an earlier version, the conversion now tries again at the next launch
-  instead of leaving the connection without its secret.
+  instead of leaving the connection without its secret, and Settings ›
+  Connections says why the connection isn’t there yet.
+- After you remove a device from the list, the device next to it is selected
+  instead of the newest one.
 - Text that wasn’t readable enough, such as errors, warnings and the Managed
   state, is now shown in the standard text color with a colored symbol. The
   mode badges use stronger contrast too.
 
 ### Changed
 
+- The Power section is now called Actions, with a shorter explanation. Its
+  buttons wrap onto a second line in a narrow window instead of being cut off.
+- Clear Disconnected has a new icon: it only tidies the list, nothing is
+  deleted.
+- Remove from List waits while you edit the asset tag, and the Device menu is
+  dimmed while the Restore or Revive window is open.
 - Settings no longer has a General tab; the app follows the Mac’s Light or
   Dark appearance.
 - A Keychain that can’t be read is reported as such, instead of as “No Jamf

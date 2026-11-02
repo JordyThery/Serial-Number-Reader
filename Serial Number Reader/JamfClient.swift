@@ -239,17 +239,12 @@ nonisolated enum JamfService: Sendable {
             case .serialNumber(let serial): try await client.mobileDevice(serial: serial)
             }
             if mobile != .none { return try Self.result(mobile, JamfDeviceRecord.init) }
-            guard computers != .skip else { return .noMatch }
-            do {
-                let computer = switch query {
-                case .udid(let udid): try await client.computer(udid: udid)
-                case .serialNumber(let serial): try await client.computer(serial: serial)
-                }
-                return try Self.result(computer, JamfDeviceRecord.init)
-            } catch let error as JamfPlatform.APIError where error.status == 403 && computers == .ifPermitted {
-                // An iPhone or iPad: without "Read Computers" it simply isn't a computer.
-                return .noMatch
+            guard computers == .always else { return .noMatch }
+            let computer = switch query {
+            case .udid(let udid): try await client.computer(udid: udid)
+            case .serialNumber(let serial): try await client.computer(serial: serial)
             }
+            return try Self.result(computer, JamfDeviceRecord.init)
         case .school(let client):
             let udid: String
             switch query {

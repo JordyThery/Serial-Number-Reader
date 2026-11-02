@@ -7,8 +7,25 @@ struct SettingsView: View {
     let jamf: JamfStore
 
     var body: some View {
-        @Bindable var connections = jamf.connections
-        ConnectionsSettingsTab(
+        let connections = jamf.connections
+        VStack(spacing: 0) {
+            // The one-time conversion of an earlier version's settings didn't
+            // finish (e.g. the Keychain refused): say so here, where the
+            // connection would be.
+            if let problem = connections.conversionProblem {
+                WarningLabel(problem)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+            }
+            connectionsTab(connections)
+        }
+    }
+
+    private func connectionsTab(_ connections: JamfConnectionStore) -> some View {
+        @Bindable var connections = connections
+        return ConnectionsSettingsTab(
             store: connections.connections,
             services: [.jamfPro, .jamfPlatform, .jamfSchool],
             optionalFields: [.jamfProWebURL],

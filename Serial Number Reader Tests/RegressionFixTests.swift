@@ -83,11 +83,49 @@ struct RegressionFixTests {
         #expect(!server.requests.contains { $0.path.contains("computers") })
     }
 
-    @Test("R2: an iPhone identified in DFU: a refused computer lookup (403) is no match")
-    func refusedComputersForIPhoneIsNoMatch() async throws {
+    @Test("A known iPhone identified in DFU: no match, no computer request, nothing refused in the activity log")
+    func dfuIPhoneDoesNotAskForComputers() async throws {
         let server = refusingComputers()
-        #expect(try await client(server).lookup(.udid(Self.udid), computers: .ifPermitted) == .noMatch)
-        #expect(server.requests.contains { $0.path.contains("computers-inventory") })
+        let log = ActivityLog()
+        let (store, settings) = try jamfStore(server: server, serverURL: "https://pro.example.com", log: log)
+        defer { settings.remove() }
+        let configurator = ConfiguratorDevice(ecid: "0x1A2B3C4D5E6F70", udid: Self.udid, deviceType: "iPhone17,3",
+                                              locationID: 0x0130_0000)
+        let dfuIPhone = USBDevice(id: 9, mode: .dfu, productID: 0x1881, usbProductName: "Debug USB", descriptor: nil,
+                                  udid: nil, modelInfo: ModelDatabase.shared.model(identifier: "iPhone17,3"),
+                                  configurator: configurator, connectedAt: .now)
+        store.lookupIfNeeded(for: dfuIPhone)
+        await until { store.state(for: dfuIPhone) != .loading }
+        #expect(store.state(for: dfuIPhone) == .noMatch)
+        #expect(!server.requests.contains { $0.path.contains("computers") })
+        #expect(!log.entries.contains { $0.status == 403 })
+    }
+
+    @Test("A Mac in Recovery whose model isn't in the list is found as a computer")
+    func unknownModelInRecoveryFindsComputer() async throws {
+        let server = MockServer { request in
+            switch request.path {
+            case "/api/oauth/token": .json(200, Self.token)
+            case "/api/v1/jamf-pro-version": .json(200, #"{"version": "11.31.0"}"#)
+            case "/api/v2/mobile-devices/detail": .json(200, Self.noDevices)
+            default:
+                .json(200, #"{"totalCount": 1, "results": [{"id": "42", "general": {"name": "Lab Mac"}, "hardware": {"serialNumber": "\#(Self.serial)"}}]}"#)
+            }
+        }
+        let (store, settings) = try jamfStore(server: server, serverURL: "https://pro.example.com")
+        defer { settings.remove() }
+        // A chip and board that aren't in AppleDeviceModels.json, e.g. a Mac newer than the list.
+        let mac = USBDevice(id: 10, mode: .recovery, productID: 0x1281, usbProductName: nil,
+                            descriptor: DescriptorParser.parse("CPID:6060 BDID:0A ECID:001A2B3C4D5E6F72 SRNM:[\(Self.serial)]"),
+                            udid: nil, modelInfo: ModelDatabase.shared.model(cpidHex: "6060", bdidHex: "0A"), connectedAt: .now)
+        #expect(mac.modelInfo == nil)
+        store.lookupIfNeeded(for: mac)
+        await until { store.state(for: mac) != .loading }
+        guard case .found(let record) = store.state(for: mac) else {
+            Issue.record("Expected the computer record, got \(store.state(for: mac))")
+            return
+        }
+        #expect(record.kind == .computer && record.jamfID == "42")
     }
 
     @Test("R2: for a Mac a refused computer lookup is still an error, naming the privilege")
@@ -100,7 +138,7 @@ struct RegressionFixTests {
         #expect(error?.status == 403)
     }
 
-    @Test("R2: which devices could be a Mac")
+    @Test("R2: which devices could be a Mac: a known model decides, else Recovery and DFU do")
     func computerLookupPerDevice() {
         let bootedIPhone = USBDevice(id: 1, mode: .normal, productID: 0x12A8, usbProductName: "iPhone", descriptor: nil,
                                      udid: Self.udid, modelInfo: ModelDatabase.shared.model(identifier: "iPhone17,3"),
@@ -120,6 +158,9 @@ struct RegressionFixTests {
         let dfuIPhone = USBDevice(id: 5, mode: .dfu, productID: 0x1881, usbProductName: "Debug USB", descriptor: nil,
                                   udid: nil, modelInfo: ModelDatabase.shared.model(identifier: "iPhone17,3"),
                                   configurator: configurator, connectedAt: .now)
+        let recoveryUnknown = USBDevice(id: 7, mode: .recovery, productID: 0x1281, usbProductName: nil,
+                                        descriptor: DescriptorParser.parse("CPID:6060 BDID:0A ECID:001A2B3C4D5E6F72 SRNM:[\(Self.serial)]"),
+                                        udid: nil, modelInfo: nil, connectedAt: .now)
         let dfuUnknown = USBDevice(id: 6, mode: .dfu, productID: 0x1881, usbProductName: "Debug USB", descriptor: nil,
                                    udid: nil, modelInfo: nil, configurator: configurator, connectedAt: .now)
 
@@ -127,7 +168,8 @@ struct RegressionFixTests {
         #expect(bootedUnknown.computerLookup == .skip)
         #expect(recoveryIPhone.computerLookup == .skip)
         #expect(recoveryMac.computerLookup == .always)
-        #expect(dfuIPhone.computerLookup == .ifPermitted)
+        #expect(recoveryUnknown.computerLookup == .always, "A Mac newer than the model list")
+        #expect(dfuIPhone.computerLookup == .skip, "A known iPhone can't be a Mac")
         #expect(dfuUnknown.computerLookup == .always)
     }
 
@@ -147,8 +189,8 @@ struct RegressionFixTests {
 
     // MARK: R3: an http:// address
 
-    private func jamfStore(server: MockServer, serverURL: String, service: ConnectionService = .jamfPro)
-        throws -> (JamfStore, TemporaryDefaults) {
+    private func jamfStore(server: MockServer, serverURL: String, service: ConnectionService = .jamfPro,
+                           log: ActivityLog? = nil) throws -> (JamfStore, TemporaryDefaults) {
         let settings = TemporaryDefaults("regression")
         let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         let record = service == .jamfSchool
@@ -156,7 +198,7 @@ struct RegressionFixTests {
             : JamfConnection(name: "Pro", service: .jamfPro, signIn: .apiClient, serverURL: serverURL, clientID: "client")
         try connections.connections.save(record, secrets: [.main: "secret"])
         connections.activeID = record.id
-        return (JamfStore(connections: connections, activityLog: ActivityLog(), session: server.session), settings)
+        return (JamfStore(connections: connections, activityLog: log ?? ActivityLog(), session: server.session), settings)
     }
 
     private func until(_ condition: @MainActor () -> Bool) async {

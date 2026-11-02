@@ -85,7 +85,7 @@ final class DeviceActionController {
     /// Last human-readable error, shown transiently in the UI.
     private(set) var lastError: String?
     /// The device that refused Enter Recovery because it doesn't trust this
-    /// Mac; the Power section shows trust and button-step guidance for it.
+    /// Mac; the Actions section shows trust and button-step guidance for it.
     private(set) var trustRequiredDeviceID: UInt64?
 
     /// What an action's work reports back. Created off the main actor.
@@ -129,7 +129,7 @@ final class DeviceActionController {
 
     /// Whether Restore, Revive and Remove Trust can run: Apple Configurator
     /// is installed, or demo mode simulates it. The disk is checked at most
-    /// every few seconds, not on every redraw of the Power section.
+    /// every few seconds, not on every redraw of the Actions section.
     var isConfiguratorAvailable: Bool {
         if demo?.isOn == true { return true }
         if let cached = configuratorCheck, now().timeIntervalSince(cached.at) < Self.configuratorCheckLifetime {

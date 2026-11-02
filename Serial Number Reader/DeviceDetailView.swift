@@ -23,13 +23,15 @@ struct DeviceDetailView: View {
     @State private var descriptorFieldsExpanded = false
     @State private var showingRestore = false
     @State private var showingRevive = false
+    /// The asset tag editor is open: Remove from List waits (⌘⌫ also deletes text).
+    @State private var editingAssetTag = false
 
     var body: some View {
         Form {
             deviceSection
 
             if device.isConnected {
-                powerSection
+                actionsSection
             }
 
             identifierSection
@@ -58,34 +60,30 @@ struct DeviceDetailView: View {
     }
 
     /// What the Device menu offers for this device; nil where the button
-    /// isn't shown or is dimmed.
+    /// isn't shown or is dimmed, and for every device action while the
+    /// Restore or Revive sheet is open.
     private var menuActions: DeviceMenuActions {
-        let connected = device.isConnected
-        let restoreOffered = connected && device.mode != .normal && !isBusy && restoreUnavailableReason == nil
+        let can = availability(sheetOpen: showingRestore || showingRevive)
         let deviceID = device.id
         return DeviceMenuActions(
-            enterRecovery: connected && offersEnterRecovery && !isBusy ? { actions.enterRecovery(device: device) } : nil,
-            bootToNormal: connected && device.mode == .recovery && !isBusy ? { actions.bootToNormal(device: device) } : nil,
-            restart: connected && !isBusy && !vdmUnavailable ? { actions.restart(device: device) } : nil,
-            enterDFU: connected && device.mode != .dfu && !isBusy && !vdmUnavailable ? { actions.enterDFU(device: device) } : nil,
-            restore: restoreOffered ? { showingRestore = true } : nil,
-            revive: restoreOffered ? { showingRevive = true } : nil,
-            removeTrust: connected && offersRemoveTrust && !isBusy && actions.isConfiguratorAvailable
-                ? { actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) } } : nil,
-            retryLookup: offersRetryLookup ? { jamf.refresh(for: device) } : nil,
-            removeFromList: connected ? nil : { monitor.removeFromList(deviceID) }
+            enterRecovery: can.enterRecovery ? { actions.enterRecovery(device: device) } : nil,
+            bootToNormal: can.bootToNormal ? { actions.bootToNormal(device: device) } : nil,
+            restart: can.restart ? { actions.restart(device: device) } : nil,
+            enterDFU: can.enterDFU ? { actions.enterDFU(device: device) } : nil,
+            restore: can.restore ? { showingRestore = true } : nil,
+            revive: can.restore ? { showingRevive = true } : nil,
+            removeTrust: can.removeTrust ? { actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) } } : nil,
+            retryLookup: can.retryLookup ? { jamf.refresh(for: device) } : nil,
+            removeFromList: can.removeFromList ? { monitor.removeFromList(deviceID) } : nil
         )
     }
 
-    private var offersEnterRecovery: Bool { device.mode == .normal && device.udid != nil }
-    private var offersRemoveTrust: Bool { device.mode == .normal && device.isTrusted }
-
-    /// Retry Lookup is shown with a record, no match, several or a failure.
-    private var offersRetryLookup: Bool {
-        switch jamf.state(for: device) {
-        case .found, .noMatch, .multipleMatches, .failed: true
-        case .notConfigured, .unavailable, .loading: false
-        }
+    /// Which actions are possible now, for the buttons and the Device menu.
+    private func availability(sheetOpen: Bool = false) -> DeviceActionAvailability {
+        DeviceActionAvailability(device: device, busy: isBusy || sheetOpen, editingAssetTag: editingAssetTag,
+                                 connectedDeviceCount: connectedDeviceCount,
+                                 configuratorAvailable: actions.isConfiguratorAvailable,
+                                 jamfState: jamf.state(for: device))
     }
 
     private var jamfRecord: JamfDeviceRecord? {
@@ -119,32 +117,35 @@ struct DeviceDetailView: View {
         }
     }
 
-    // MARK: Power and restore actions
+    // MARK: Actions (power, mode, restore, trust)
 
     /// Any action — or a Restore/Revive — in progress blocks the others: they
     /// would interrupt each other.
     private var isBusy: Bool { actions.runningAction != nil || restore.isRunning }
 
-    private var powerSection: some View {
-        Section {
-            HStack(spacing: 10) {
-                if offersEnterRecovery {
+    private var actionsSection: some View {
+        let can = availability()
+        let offers = DeviceActionAvailability.Offers(device: device)
+        return Section {
+            // Wraps onto a second line in a narrow window instead of cutting labels off.
+            WrappingHStack(spacing: 10, lineSpacing: 8) {
+                if offers.enterRecovery {
                     Button {
                         actions.enterRecovery(device: device)
                     } label: {
                         Label("Enter Recovery", systemImage: "arrow.counterclockwise")
                     }
-                    .disabled(isBusy)
+                    .disabled(!can.enterRecovery)
                     .help("Reboot this device into Recovery mode, where its serial number is readable — no button presses or password needed")
                 }
 
-                if device.mode == .recovery {
+                if offers.bootToNormal {
                     Button {
                         actions.bootToNormal(device: device)
                     } label: {
                         Label("Boot to Normal", systemImage: "power")
                     }
-                    .disabled(isBusy)
+                    .disabled(!can.bootToNormal)
                     .help("Reboot this device out of Recovery into normal operation")
                 }
 
@@ -153,37 +154,30 @@ struct DeviceDetailView: View {
                 } label: {
                     Label("Restart", systemImage: "restart")
                 }
-                .disabled(isBusy || vdmUnavailable)
+                .disabled(!can.restart)
                 .help(vdmUnavailable
                       ? Self.vdmUnavailableHelp
                       : "Force-restart over USB-C power delivery — requires an administrator password")
 
-                if device.mode != .dfu {
+                if offers.enterDFU {
                     Button {
                         actions.enterDFU(device: device)
                     } label: {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
-                    .disabled(isBusy || vdmUnavailable)
+                    .disabled(!can.enterDFU)
                     .help(vdmUnavailable
                           ? Self.vdmUnavailableHelp
                           : "Reboot into DFU mode over USB-C power delivery — requires an administrator password")
                 }
 
-                if actions.runningAction != nil {
-                    ProgressView().controlSize(.small)
-                }
-                Spacer()
-            }
-
-            if device.mode != .normal {
-                HStack(spacing: 10) {
+                if offers.restore {
                     Button {
                         showingRestore = true
                     } label: {
                         Label("Restore…", systemImage: "arrow.down.circle")
                     }
-                    .disabled(isBusy || restoreUnavailableReason != nil)
+                    .disabled(!can.restore)
                     .help(restoreUnavailableReason ?? "Erase the device and install the latest or a specific version of its operating system")
 
                     Button {
@@ -191,25 +185,28 @@ struct DeviceDetailView: View {
                     } label: {
                         Label("Revive…", systemImage: "cross.case")
                     }
-                    .disabled(isBusy || restoreUnavailableReason != nil)
+                    .disabled(!can.restore)
                     .help(restoreUnavailableReason ?? "Reinstall the operating system and keep the device’s content")
-                    Spacer()
                 }
-            } else if offersRemoveTrust {
-                HStack {
+
+                if offers.removeTrust {
                     Button {
                         let deviceID = device.id
                         actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) }
                     } label: {
                         Label("Remove Trust", systemImage: "lock.open.trianglebadge.exclamationmark")
                     }
-                    .disabled(isBusy || !actions.isConfiguratorAvailable)
+                    .disabled(!can.removeTrust)
                     .help(actions.isConfiguratorAvailable
                           ? "Remove the pairing between this Mac and the device, on both sides"
                           : Configurator.notInstalledHelp)
-                    Spacer()
+                }
+
+                if actions.runningAction != nil {
+                    ProgressView().controlSize(.small)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if actions.trustRequiredDeviceID == device.id {
                 trustGuidance
@@ -220,9 +217,9 @@ struct DeviceDetailView: View {
                     .font(.caption)
             }
         } header: {
-            Text("Power")
+            Text("Actions")
         } footer: {
-            Text(powerFooterText)
+            Text(actionsFooterText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -247,35 +244,32 @@ struct DeviceDetailView: View {
 
     /// Why Restore and Revive can't run for this device, or nil when they can.
     private var restoreUnavailableReason: String? {
-        if !actions.isConfiguratorAvailable { return Configurator.notInstalledHelp }
-        if device.configuratorECID == nil {
-            return "Apple Configurator hasn’t identified this device yet."
-        }
-        return nil
+        DeviceActionAvailability.restoreUnavailableReason(device: device, configuratorAvailable: actions.isConfiguratorAvailable)
     }
 
     /// The USB-PD command goes to a port, not a device, so with several
     /// devices attached it could hit the wrong one — offer it only for one.
     /// (The root helper refuses too when more than one port has something.)
-    private var vdmUnavailable: Bool { connectedDeviceCount > 1 }
+    private var vdmUnavailable: Bool { DeviceActionAvailability.vdmUnavailable(connectedDeviceCount: connectedDeviceCount) }
 
     private static let vdmUnavailableHelp =
         "Disabled while more than one device is connected — the USB-C command targets a port, not a specific device"
 
-    private var powerFooterText: String {
+    /// Short: each button's help says the rest.
+    private var actionsFooterText: String {
         var text = switch device.mode {
         case .normal:
-            "Enter Recovery asks the device to reboot into Recovery mode — the serial number then appears here automatically. On iOS 27 and later the device must trust this Mac. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+            "Enter Recovery makes the serial number readable; on iOS 27 and later the device must trust this Mac. Restart and Enter DFU need a USB-C device and an administrator password."
         case .recovery:
-            "Boot to Normal reboots the device out of Recovery. Restore erases the device and installs a new operating system; Revive reinstalls it and keeps the content — both through Apple Configurator. Restart and Enter DFU send a USB-C power-delivery command over any port and prompt for an administrator password."
+            "Restore erases the device; Revive keeps its content. Both use Apple Configurator. Restart and Enter DFU need a USB-C device and an administrator password."
         case .dfu:
-            "Restore erases the device and installs a new operating system; Revive reinstalls it and keeps the content — both through Apple Configurator. Restart sends a USB-C power-delivery command over any port, even in DFU, and prompts for an administrator password."
+            "Restore erases the device; Revive keeps its content. Both use Apple Configurator. Restart needs a USB-C device and an administrator password."
         }
         if vdmUnavailable {
-            text += " Restart and Enter DFU are disabled while more than one device is connected, because the command targets a port rather than a specific device."
+            text += " With more than one device connected, Restart and Enter DFU are off: they target a port, not a device."
         }
         if PretendIPhone.isPretend(device) {
-            text += " In Demo Mode every action on this pretend iPhone is simulated: nothing is sent to a device and no password is asked."
+            text += " Demo Mode: every action is simulated."
         }
         return text
     }
@@ -453,7 +447,7 @@ struct DeviceDetailView: View {
                 }
             }
         }
-        AssetTagRow(record: record, device: device, jamf: jamf)
+        AssetTagRow(record: record, device: device, jamf: jamf, isEditing: $editingAssetTag)
 
         if let date = record.lastInventoryDate {
             LabeledContent("Last Inventory Update",
@@ -487,8 +481,8 @@ struct AssetTagRow: View {
     let record: JamfDeviceRecord
     let device: USBDevice
     let jamf: JamfStore
-
-    @State private var isEditing = false
+    /// Shared with the detail view, which keeps Remove from List off meanwhile.
+    @Binding var isEditing: Bool
     @State private var draft = ""
     @State private var saving = false
     @State private var errorMessage: String?
@@ -687,6 +681,131 @@ struct QRCodeView: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+// MARK: - Which actions are possible
+
+/// Which of a device's actions are offered (shown) and possible now, for the
+/// detail view's buttons and the Device menu alike.
+nonisolated struct DeviceActionAvailability: Equatable {
+    /// Which buttons the device's mode shows.
+    struct Offers: Equatable {
+        var enterRecovery: Bool
+        var bootToNormal: Bool
+        var enterDFU: Bool
+        /// Restore and Revive.
+        var restore: Bool
+        var removeTrust: Bool
+
+        init(device: USBDevice) {
+            enterRecovery = device.mode == .normal && device.udid != nil
+            bootToNormal = device.mode == .recovery
+            enterDFU = device.mode != .dfu
+            restore = device.mode != .normal
+            removeTrust = device.mode == .normal && device.isTrusted
+        }
+    }
+
+    var enterRecovery: Bool
+    var bootToNormal: Bool
+    var restart: Bool
+    var enterDFU: Bool
+    /// Restore and Revive.
+    var restore: Bool
+    var removeTrust: Bool
+    var retryLookup: Bool
+    var removeFromList: Bool
+
+    /// - Parameters:
+    ///   - busy: an action or a Restore/Revive runs, or (for the Device
+    ///     menu) the Restore or Revive sheet is open.
+    ///   - editingAssetTag: the asset tag editor is open.
+    init(device: USBDevice, busy: Bool, editingAssetTag: Bool, connectedDeviceCount: Int,
+         configuratorAvailable: Bool, jamfState: JamfLookupState) {
+        let offers = Offers(device: device)
+        let ready = device.isConnected && !busy
+        let vdm = ready && !Self.vdmUnavailable(connectedDeviceCount: connectedDeviceCount)
+        enterRecovery = ready && offers.enterRecovery
+        bootToNormal = ready && offers.bootToNormal
+        restart = vdm
+        enterDFU = vdm && offers.enterDFU
+        restore = ready && offers.restore
+            && Self.restoreUnavailableReason(device: device, configuratorAvailable: configuratorAvailable) == nil
+        removeTrust = ready && offers.removeTrust && configuratorAvailable
+        retryLookup = switch jamfState {
+        case .found, .noMatch, .multipleMatches, .failed: true
+        case .notConfigured, .unavailable, .loading: false
+        }
+        removeFromList = !device.isConnected && !editingAssetTag
+    }
+
+    /// The USB-PD command goes to a port, not a device, so with several
+    /// devices attached it could hit the wrong one — offer it only for one.
+    /// (The root helper refuses too when more than one port has something.)
+    static func vdmUnavailable(connectedDeviceCount: Int) -> Bool { connectedDeviceCount > 1 }
+
+    /// Why Restore and Revive can't run for this device, or nil when they can.
+    static func restoreUnavailableReason(device: USBDevice, configuratorAvailable: Bool) -> String? {
+        if !configuratorAvailable { return Configurator.notInstalledHelp }
+        if device.configuratorECID == nil { return "Apple Configurator hasn’t identified this device yet." }
+        return nil
+    }
+}
+
+// MARK: - Wrapping row
+
+/// Lays its views out left to right and starts a new line when the next one
+/// doesn't fit, so buttons are never cut off in a narrow window.
+struct WrappingHStack: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let lines = Self.lines(widths: sizes.map(\.width), available: proposal.width ?? .infinity, spacing: spacing)
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        for line in lines {
+            let lineWidth: CGFloat = line.reduce(0) { $0 + sizes[$1].width } + spacing * CGFloat(line.count - 1)
+            let lineHeight: CGFloat = line.reduce(0) { max($0, sizes[$1].height) }
+            width = max(width, lineWidth)
+            height += lineHeight
+        }
+        height += lineSpacing * CGFloat(max(lines.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        var y = bounds.minY
+        for line in Self.lines(widths: sizes.map(\.width), available: bounds.width, spacing: spacing) {
+            let height: CGFloat = line.reduce(0) { max($0, sizes[$1].height) }
+            var x = bounds.minX
+            for index in line {
+                subviews[index].place(at: CGPoint(x: x, y: y + (height - sizes[index].height) / 2),
+                                      proposal: ProposedViewSize(sizes[index]))
+                x += sizes[index].width + spacing
+            }
+            y += height + lineSpacing
+        }
+    }
+
+    /// The views on each line, by index: as many as fit in `available`, at
+    /// least one per line (a view wider than the line gets a line of its own).
+    nonisolated static func lines(widths: [CGFloat], available: CGFloat, spacing: CGFloat) -> [[Int]] {
+        var lines: [[Int]] = []
+        var lineWidth: CGFloat = 0
+        for (index, width) in widths.enumerated() {
+            if let last = lines.indices.last, lineWidth + spacing + width <= available {
+                lines[last].append(index)
+                lineWidth += spacing + width
+            } else {
+                lines.append([index])
+                lineWidth = width
+            }
+        }
+        return lines
     }
 }
 
