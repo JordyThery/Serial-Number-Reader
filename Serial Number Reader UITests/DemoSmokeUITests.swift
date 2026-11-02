@@ -16,7 +16,13 @@ final class DemoSmokeUITests: JTKitUITestCase {
     }
 
     override func didLaunch() {
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 20), "The main window did not open")
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 20), "The main window did not open")
+        // A click on the title bar first: in a fresh test runner, a key press
+        // sent before any click (⌘, for Settings) crashes the runner in
+        // CoreGraphics (CGS_REQUIRE_INIT). The release check runs each test
+        // in its own runner.
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 8)).click()
     }
 
     // MARK: Helpers
