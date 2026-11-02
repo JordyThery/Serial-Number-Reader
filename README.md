@@ -1,5 +1,6 @@
 # Serial Number Reader
 
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A native macOS app that identifies connected iPhones, iPads and Macs by serial number — **including devices that won’t boot** — and optionally looks them up in Jamf Pro or Jamf School. Built for handling devices with no readable printed serial.
@@ -16,20 +17,20 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 - **Jamf Pro and Jamf School lookup** by serial or UDID — Jamf Pro directly or through the **Jamf Platform API** — showing the device’s Jamf name, serial, UDID, model, OS version, managed state, assigned user and last inventory date, with an **editable asset tag** and a link to the record.
 - **Several saved connections** — switch between them with the picker in the toolbar or the **Connection** menu.
 - **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU a USB-C device, even when it’s unresponsive.
-- **Session export** — save every device from the session as CSV (**File → Export Session…**), or copy all serial numbers at once. **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click) tidy the list.
-- **Activity log** — **Window → Activity Log** (⇧⌘L) lists every sign-in, lookup, asset tag change, connection test and USB action, with an export for bug reports that masks serial numbers, UDIDs and ECIDs. It is kept in memory only.
-- **Demo Mode** — try the app without a device or a Jamf tenant: a pretend iPhone and the sample Jamf servers “Contoso Jamf Pro (Demo)” and “Contoso Academy (Demo)”. Every action on the pretend iPhone is simulated; nothing is sent to a device or a tenant, and real devices are hidden while it’s on.
+- **Session export** — save every device from the session as CSV (**File › Export Session…**, ⌘E), or copy all serial numbers at once (**File › Copy All Serial Numbers**, ⇧⌘C). **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click) tidy the list.
+- **Activity log** — **Window › Activity Log** (⇧⌘L) lists every sign-in, lookup, asset tag change, connection test and USB action. **Export for Bug Report…** replaces serial numbers, UDIDs, ECIDs, usernames and IP addresses with placeholders; **Export Unmasked…** and **Copy Entry** keep them. The log is kept in memory only.
+- **Demo Mode** — try the app without a device or a Jamf tenant: a pretend iPhone and the sample Jamf servers “Contoso Jamf Pro (Demo)” and “Contoso Academy (Demo)”. Every action on the pretend iPhone is simulated; nothing is sent to a device or a tenant, and real devices are hidden while it’s on. Turn it on with **Try Demo Mode** in the sidebar when no device is connected, or with **Demo Mode** in the toolbar’s connection picker or the **Connection** menu (dimmed while an action or restore runs).
 - **Copy buttons** and a scannable **QR code** for the serial number.
 
 ## Requirements
 
 - macOS 14 or later.
-- USB-C power actions (Restart / Enter DFU) require an Apple Silicon Mac host and a USB-C target device, and prompt for an administrator password. They work only while one device is connected, and nothing else may be connected to another USB-C port of the Mac (no second device, hub or USB-C charger; charging with MagSafe is fine): the command goes to a port, not to a device.
+- USB-C power actions (Restart / Enter DFU) require an Apple silicon Mac host and a USB-C target device, and prompt for an administrator password. They work only while one device is connected, and nothing else may be connected to another USB-C port of the Mac (no second device, hub or USB-C charger; charging with MagSafe is fine): the command goes to a port, not to a device.
 - Restore, Revive, Remove Trust and DFU identification require [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344) (free). Serial Number Reader uses its command-line tool; no setup is needed.
 
 ## Installation
 
-Download the latest build from [Releases](../../releases), unzip, and move **Serial Number Reader.app** to your Applications folder. The app is signed with a Developer ID and notarized by Apple. **Settings → Updates** checks GitHub for new versions.
+Download the latest build from [Releases](../../releases), unzip, and move **Serial Number Reader.app** to your Applications folder. The app is signed with a Developer ID and notarized by Apple. Once a day the app asks GitHub whether a newer version exists; turn this off with **Check for updates daily** in **Settings › Updates**, or check now with **Serial Number Reader › Check for Updates…**.
 
 ## Usage
 
@@ -37,37 +38,44 @@ Connect a device over USB. It appears in the sidebar with its mode; select it to
 
 | Mode | What you get | Actions |
 | --- | --- | --- |
-| Normal | UDID, model, OS version, then Jamf record (serial, user, asset tag, …) | Enter Recovery · Restart · Enter DFU · Remove Trust |
+| Normal | UDID, model, OS version, then Jamf record (serial, user, asset tag, …) | Enter Recovery · Restart · Enter DFU · Remove Trust (when the device trusts this Mac) |
 | Recovery | Serial number + ECID read directly; model from CPID/BDID; Jamf record | Boot to Normal · Restore · Revive · Restart · Enter DFU |
 | DFU | Model, ECID and UDID via Apple Configurator; Jamf record; steps to enter Recovery mode | Restore · Revive · Restart |
 
 Enter Recovery, Boot to Normal, Restore and Revive need no administrator password; Restart and Enter DFU use USB-C power delivery and prompt for one. Before asking, the app checks that its own app on disk is the signed one that is running. Only one action runs at a time, and none while a Restore or Revive runs.
 
-> **iOS 27 and later:** Enter Recovery only works from a Mac the device trusts. Unlock the device and tap **Trust** once, or enter Recovery mode with the buttons — the app shows the steps for the model. **Remove Trust** deletes the pairing again afterwards.
+> **iOS 27 and later:** Enter Recovery only works from a Mac the device trusts. Unlock the device and tap **Trust** once, or enter Recovery mode with the buttons — the app shows the steps for the model. **Remove Trust** deletes the pairing again afterward.
 
 > **Note on booted devices:** an iPhone or iPad that hasn’t been unlocked since power-on doesn’t enumerate over USB (iOS USB restricted mode). Unlock it once, or put it into Recovery mode to read the serial.
 
 ### Jamf Pro and Jamf School
 
-Open **Settings → Connections** and add a connection with **+**. **Test Connection** checks it. Each connection is one of:
+Open **Settings › Connections** and add a connection with **+**. **Test Connection** checks it. Each connection is one of:
 
 - **Jamf Pro**, signing in with an **API client** or a **Username and password** — enter your Jamf Pro server URL and credentials. The account needs read access to mobile devices and computers (and update access to edit asset tags).
 - **Jamf Platform API** — create an integration in [Jamf Account](https://account.jamf.com) scoped to a **platform environment**, with the `devices:read` permission (plus `devices:update` to edit asset tags). Enter its region, client ID, client secret and environment ID. The Jamf Pro URL is optional and only used for “Open in Jamf Pro” links. Integrations expire after six months.
-- **Jamf School** — enter your Jamf School URL, Network ID and an API key (Organization → Settings → API) with read access to devices, plus write access to edit asset tags.
+- **Jamf School** — enter your Jamf School URL, Network ID and an API key (Organization › Settings › API) with read access to devices, plus write access to edit asset tags.
 
-Secrets are stored in the macOS Keychain, never in preferences. Settings from versions before saved connections are converted once, automatically; the old settings are left as they were.
+Settings from versions before saved connections are converted once, automatically; the old settings are left as they were.
+
+### Where data is stored
+
+- **Connections** — as JSON in the app’s preferences (UserDefaults key `jamfConnections`), without secrets.
+- **Secrets** (client secrets, passwords, API keys) — in the macOS Keychain, service `be.jordythery.SerialNumberReader.jamf`, never in preferences.
+- **Activity log** — in memory only; nothing is written to disk unless you export it.
+- **System log** — serial numbers, UDIDs, ECIDs and server answers are logged as private, so macOS hides them in Console.
 
 ### Device model data
 
-The CPID/BDID → model mapping lives in [`AppleDeviceModels.json`](Serial%20Number%20Reader/AppleDeviceModels.json) as a bundled resource, covering iPhone 8 and later, all iPads from 2017 onward, and Apple Silicon Macs. It can be updated without code changes.
+The CPID/BDID → model mapping lives in [`AppleDeviceModels.json`](Serial%20Number%20Reader/AppleDeviceModels.json) as a bundled resource, covering iPhone 8 and later, all iPads from 2017 onward, and Apple silicon Macs from 2022 onward (the first M1 Macs aren’t listed yet; they show an unknown model in Recovery and DFU, so a Restore can only install the latest version). It can be updated without code changes.
 
 ### Network use
 
-Besides Jamf Pro or Jamf School, the app contacts GitHub (update check, can be turned off) and, when preparing a Restore, the public [ipsw.me](https://ipsw.me) data to show the latest signed version and check an IPSW’s signing status — only the model identifier and build number are sent.
+Besides Jamf Pro or Jamf School, the app contacts GitHub (update check, can be turned off) and, when preparing a Restore, the public [ipsw.me](https://ipsw.me) data to show the latest signed version and check an IPSW’s signing status — only the model identifier and build number are sent. For a Restore without a chosen IPSW, and for a Revive, Apple Configurator downloads the software from Apple.
 
 ## Building from source
 
-Open `Serial Number Reader.xcodeproj` in Xcode and build the **Serial Number Reader** scheme. The only dependency is [JTKit](https://github.com/JordyThery/JTKit), the shared package of these apps, which Xcode fetches itself. Unit tests (Swift Testing) cover the USB descriptor parser, UDID and ECID handling, Configurator output parsing, IPSW checks, usbmuxd and lockdown framing, the pairing checks of the trusted connection, the safeguards of the power actions, connection conversion, the Jamf networking (on a fake server), the CSV export, the activity log entries, Demo Mode and the acknowledgement.
+Open `Serial Number Reader.xcodeproj` in Xcode 26 or later and build the **Serial Number Reader** scheme. The app’s only package dependency is [JTKit](https://github.com/JordyThery/JTKit), the shared package of these apps (version pinned in `Package.resolved`); resolving it also downloads Microsoft’s MSAL, which JTKit uses for Intune sign-in and which this app doesn’t link or ship. Unit tests (Swift Testing) cover the USB descriptor parser, UDID and ECID handling, Configurator output parsing, IPSW checks, usbmuxd and lockdown framing, the pairing checks of the trusted connection, the safeguards of the power actions, connection conversion, the Jamf networking (on a fake server), the CSV export, the device list, the activity log entries, Demo Mode, the guard that keeps tests away from real USB devices and saved connections, and the acknowledgement. A UI smoke test runs the app in Demo Mode.
 
 The app runs outside the App Sandbox: it needs direct IOKit access for USB enumeration, and the USB-C power actions use the private `AppleHPM` port-controller interface, which requires root (the app re-launches itself with administrator privileges for those actions only).
 
@@ -83,6 +91,10 @@ The app runs outside the App Sandbox: it needs direct IOKit access for USB enume
 - `Configurator` / `RestoreController` — runs Apple Configurator’s `cfgutil` to identify devices, Restore, Revive and remove trust, and tracks a running Restore or Revive.
 - `SessionExport` — CSV export and serial list built from the session’s device list.
 - `VDMTool` / `DeviceActionController` — USB-PD vendor-defined-message power actions via `AppleHPM`, and the other device actions.
+- `RecoveryCommands` — Boot to Normal from Recovery mode (iBoot commands).
+- `AppDemo` — the Demo Mode switch.
+- `UnderTest` — the guard that refuses every USB action and saved-connection request under tests.
+- `BlockingWork` — runs blocking USB work and child processes off the main thread.
 - `AboutInfo` — the About window and the acknowledgement.
 
 ## Credits
