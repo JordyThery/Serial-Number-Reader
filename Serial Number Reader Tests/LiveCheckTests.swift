@@ -84,9 +84,10 @@ struct LiveTenant {
     }
 
     /// The app's own lookup for a device in Recovery with this serial, as when
-    /// one is plugged in: `lookupIfNeeded`, or `refresh` to read again.
-    func lookUp(serial: String, again: Bool = false) async -> JamfLookupState {
-        let device = LiveDevice.recovery(serial: serial)
+    /// one is plugged in: `lookupIfNeeded`, or `refresh` to read again. A Mac
+    /// (`mac`) is also looked for among computers, as the app does for Macs only.
+    func lookUp(serial: String, mac: Bool = false, again: Bool = false) async -> JamfLookupState {
+        let device = LiveDevice.recovery(serial: serial, mac: mac)
         if again { store.refresh(for: device) } else { store.lookupIfNeeded(for: device) }
         for _ in 0..<300 {
             let state = store.state(for: device)
@@ -100,11 +101,15 @@ struct LiveTenant {
 /// A Recovery-mode device as the app sees one over USB, built in memory:
 /// nothing is read from USB. Made-up ECID.
 enum LiveDevice {
-    static func recovery(serial: String) -> USBDevice {
-        let descriptor = "CPID:8140 BDID:08 ECID:0000000000000001 SRNM:[\(serial)]"
+    /// An iPhone, or with `mac` an M1 MacBook Air (CPID 8103, BDID 26), whose
+    /// model the app resolves as it would from the descriptor.
+    static func recovery(serial: String, mac: Bool = false) -> USBDevice {
+        let (cpid, bdid) = mac ? ("8103", "26") : ("8140", "08")
+        let descriptor = "CPID:\(cpid) BDID:\(bdid) ECID:0000000000000001 SRNM:[\(serial)]"
         return USBDevice(id: 0xDE00_7E57, mode: .recovery, productID: 0x1281, usbProductName: "Apple Mobile Device (Recovery Mode)",
                          descriptor: DescriptorParser.parse(descriptor),
-                         udid: nil, modelInfo: nil, connectedAt: .now)
+                         udid: nil, modelInfo: mac ? ModelDatabase.shared.model(cpidHex: cpid, bdidHex: bdid) : nil,
+                         connectedAt: .now)
     }
 }
 
@@ -597,8 +602,8 @@ struct LiveLookupTests {
         checkUnderTest(run, when: "after the asset tag")
 
         // 4. The computer record, found by the app's own lookup
-        //    (mobile devices first, then computers, as in the app).
-        let macState = await app.lookUp(serial: macSerial)
+        //    (mobile devices first, then computers for a Mac, as in the app).
+        let macState = await app.lookUp(serial: macSerial, mac: true)
         var macFound = false
         var macName: String?
         if case .found(let mac) = macState {
