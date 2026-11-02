@@ -8,19 +8,20 @@ struct SettingsView: View {
 
     var body: some View {
         let connections = jamf.connections
-        VStack(spacing: 0) {
+        connectionsTab(connections)
             // The one-time conversion of an earlier version's settings didn't
             // finish (e.g. the Keychain refused): say so here, where the
-            // connection would be.
-            if let problem = connections.conversionProblem {
-                WarningLabel(problem)
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
+            // connection would be. An inset, not a stack around the tab, so
+            // the tab keeps its name and icon in the Settings toolbar.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let problem = connections.conversionProblem {
+                    WarningLabel(problem)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 12)
+                }
             }
-            connectionsTab(connections)
-        }
     }
 
     private func connectionsTab(_ connections: JamfConnectionStore) -> some View {
