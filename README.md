@@ -1,5 +1,12 @@
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="Serial Number Reader app icon">
+</p>
+
 # Serial Number Reader
 
+*Read serial numbers from plugged-in iPhones, iPads and Macs and look them up in Jamf.*
+
+[![Latest release](https://img.shields.io/github/v/release/JordyThery/Serial-Number-Reader?label=release)](https://github.com/JordyThery/Serial-Number-Reader/releases/latest)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
