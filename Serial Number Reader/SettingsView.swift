@@ -7,8 +7,26 @@ struct SettingsView: View {
     let jamf: JamfStore
 
     var body: some View {
-        @Bindable var connections = jamf.connections
-        ConnectionsSettingsTab(
+        let connections = jamf.connections
+        connectionsTab(connections)
+            // The one-time conversion of an earlier version's settings didn't
+            // finish (e.g. the Keychain refused): say so here, where the
+            // connection would be. An inset, not a stack around the tab, so
+            // the tab keeps its name and icon in the Settings toolbar.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let problem = connections.conversionProblem {
+                    WarningLabel(problem)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 12)
+                }
+            }
+    }
+
+    private func connectionsTab(_ connections: JamfConnectionStore) -> some View {
+        @Bindable var connections = connections
+        return ConnectionsSettingsTab(
             store: connections.connections,
             services: [.jamfPro, .jamfPlatform, .jamfSchool],
             optionalFields: [.jamfProWebURL],
@@ -33,9 +51,9 @@ struct SettingsView: View {
     static func help(for record: JamfConnection) -> String {
         switch (record.service, record.signIn) {
         case (.jamfPro, .usernamePassword):
-            "A classic Jamf Pro user account with permission to read mobile devices and computers (update permission is needed to edit asset tags). The password is stored in the Keychain."
+            "A classic Jamf Pro user account with permission to read mobile devices, and computers to look up Macs (update permission is needed to edit asset tags). The password is stored in the Keychain."
         case (.jamfPro, _):
-            "Create an API client in Jamf Pro under Settings → System → API roles and clients. It needs “Read Mobile Devices” and “Read Computers” privileges — plus “Update Mobile Devices” / “Update Computers” to edit asset tags. The client secret is stored in the Keychain."
+            "Create an API client in Jamf Pro under Settings → System → API roles and clients. It needs the “Read Mobile Devices” privilege, “Read Computers” to look up Macs — plus “Update Mobile Devices” / “Update Computers” to edit asset tags. The client secret is stored in the Keychain."
         case (.jamfPlatform, _):
             "Create an integration in Jamf Account scoped to a platform environment, in the region your Jamf Pro is hosted in. It needs the devices:read permission, plus devices:update to edit asset tags. Copy the environment ID from the integration’s details. Integrations expire after six months. The Jamf Pro web address is optional and used only for “Open in Jamf Pro” links. The client secret is stored in the Keychain."
         case (.jamfSchool, _):

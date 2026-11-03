@@ -39,6 +39,12 @@ struct ContentView: View {
                                 .disabled(device.isConnected)
                             }
                     }
+                    // The Delete key (and Edit › Delete) removes a disconnected device.
+                    .onDeleteCommand {
+                        if let device = selectedDevice, !device.isConnected {
+                            monitor.removeFromList(device.id)
+                        }
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 300, ideal: 340)
@@ -51,7 +57,7 @@ struct ContentView: View {
                 Button {
                     monitor.clearDisconnected()
                 } label: {
-                    Label("Clear Disconnected", systemImage: "trash")
+                    Label("Clear Disconnected", systemImage: "rectangle.stack.badge.minus")
                 }
                 .help("Remove all disconnected devices from the list")
                 .disabled(!monitor.hasDisconnectedDevices)
@@ -80,7 +86,10 @@ struct ContentView: View {
             }
             // In the detail column only, so it never covers the device list.
             .safeAreaInset(edge: .top, spacing: 0) {
-                RestoreBanner(restore: restore)
+                VStack(spacing: 0) {
+                    RestoreBanner(restore: restore)
+                    RetryWaitBar(waits: jamf.waits)
+                }
             }
         }
         .navigationTitle("Serial Number Reader")
@@ -94,10 +103,9 @@ struct ContentView: View {
             for device in monitor.devices {
                 jamf.lookupIfNeeded(for: device)
             }
-            // If nothing valid is selected, select the newest connection.
-            if selectedDevice == nil {
-                selectedDeviceID = monitor.devices.first?.id
-            }
+        }
+        .onChange(of: monitor.devices.map(\.id), initial: true) { old, new in
+            selectedDeviceID = DeviceSelection.next(selected: selectedDeviceID, old: old, new: new)
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -113,6 +121,60 @@ struct ContentView: View {
             for device in monitor.devices {
                 jamf.lookupIfNeeded(for: device)
             }
+        }
+    }
+}
+
+// MARK: - Selection
+
+/// Which row is selected after the device list changed.
+nonisolated enum DeviceSelection {
+    /// - A selected row that is still listed stays selected.
+    /// - A selected row that was removed (Delete, Remove from List, Clear
+    ///   Disconnected) gives way to its neighbor: the next older row, else
+    ///   the one above, else nothing. Never the newest device, which may be
+    ///   another one entirely. When the device itself came back as a new row
+    ///   at the same time (a reboot replaces its own old row), that row.
+    /// - With nothing selected, a device that just connected is selected;
+    ///   at launch, the newest one.
+    static func next(selected: USBDevice.ID?, old: [USBDevice.ID], new: [USBDevice.ID]) -> USBDevice.ID? {
+        let added = new.filter { !old.contains($0) }
+        guard let selected else {
+            return old == new ? new.first : added.first
+        }
+        if new.contains(selected) { return selected }
+        guard let index = old.firstIndex(of: selected) else { return added.first }
+        if let replacement = added.first { return replacement }
+        if let older = old[(index + 1)...].first(where: new.contains) { return older }
+        return old[..<index].last(where: new.contains)
+    }
+}
+
+// MARK: - Retry waits
+
+/// While Jamf asked to wait before a request is tried again ("Jamf asked to
+/// wait 40 s"): what is going on, and Stop, which ends the wait at once.
+struct RetryWaitBar: View {
+    let waits: RequestWaits
+
+    var body: some View {
+        if let text = waits.statusText {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(text)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Stop") { waits.cancelAll() }
+                        .help("Stop waiting: the request isn’t sent again")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                Divider()
+            }
+            .background(.bar)
+            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -160,6 +222,7 @@ struct DeviceRow: View {
         HStack(spacing: 10) {
             Image(systemName: iconName)
                 .font(.title2)
+                .accessibilityHidden(true)
                 .foregroundStyle(device.isConnected ? AnyShapeStyle(modeColor) : AnyShapeStyle(.secondary))
                 .frame(width: 28)
 
@@ -180,12 +243,7 @@ struct DeviceRow: View {
                     ModeBadge(mode: device.mode)
                         .fixedSize()
                     if !device.isConnected {
-                        Text("Disconnected")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(.gray.opacity(0.18), in: Capsule())
-                            .foregroundStyle(.secondary)
+                        StatusBadge("Disconnected", style: .neutral)
                             .fixedSize()
                     }
                 }
@@ -202,6 +260,8 @@ struct DeviceRow: View {
         }
         .padding(.vertical, 4)
         .help(connectionTooltip)
+        // One VoiceOver element per row: model, OS, mode, serial, Jamf status.
+        .accessibilityElement(children: .combine)
     }
 
     private var jamfSerial: String? {
@@ -250,7 +310,7 @@ struct DeviceRow: View {
         case "iPhone", "iPod": return "iphone"
         default: break
         }
-        if device.modelInfo?.identifier.hasPrefix("Mac") == true { return "laptopcomputer" }
+        if device.modelInfo?.isMac == true { return "laptopcomputer" }
         if device.modelDisplayName.localizedCaseInsensitiveContains("ipad") { return "ipad" }
         // Opaque DFU devices expose no identifiers — don't imply a device type.
         if device.isOpaqueDFU { return "apple.logo" }
@@ -270,12 +330,9 @@ struct ModeBadge: View {
     let mode: DeviceMode
 
     var body: some View {
-        Text(mode.rawValue)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(color.opacity(0.18), in: Capsule())
-            .foregroundStyle(color)
+        // JTKit's badge: primary text on a wash of the mode's color, readable
+        // at caption size in light and dark, stronger with Increase Contrast.
+        StatusBadge(mode.rawValue, style: .colored(color))
     }
 
     private var color: Color {

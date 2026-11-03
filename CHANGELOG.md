@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.5.0 — 2026-11-03
+
+### New
+
+- **Device menu** with the selected device’s actions: Enter Recovery, Boot to
+  Normal, Restart, Enter DFU, Restore…, Revive…, Remove Trust, Retry Lookup
+  (⌘R) and Remove from List (⌘⌫). The Delete key also removes a disconnected
+  device from the list.
+- **The first Apple silicon Macs are recognized**: MacBook Air, 13-inch
+  MacBook Pro, Mac mini and iMac with M1 (2020–2021), and the 2021 14- and
+  16-inch MacBook Pro. In Recovery and DFU they show their model, and a
+  Restore can use a specific IPSW.
+- When Jamf asks the app to wait before trying a request again, a bar above
+  the device details says so, with a Stop button.
+- The Restore and Revive windows can be resized.
+
+### Fixed
+
+- Macs are found again on Jamf Pro servers older than 11.30, and their asset
+  tag can be saved.
+- An iPhone or iPad that isn’t in Jamf Pro shows “No match” again with an API
+  client that can read only mobile devices.
+- A saved server address that starts with http:// now says “Use an https://
+  address.” Changing it to https:// in Settings keeps the stored secret.
+- If the Keychain couldn’t be read when the app first converted the settings
+  of an earlier version, the conversion now tries again at the next launch
+  instead of leaving the connection without its secret, and Settings ›
+  Connections says why the connection isn’t there yet.
+- After you remove a device from the list, the device next to it is selected
+  instead of the newest one.
+- Text that wasn’t readable enough, such as errors, warnings and the Managed
+  state, is now shown in the standard text color with a colored symbol. The
+  mode badges use stronger contrast too.
+
+### Changed
+
+- The Power section is now called Actions, with a shorter explanation. Its
+  buttons wrap onto a second line in a narrow window instead of being cut off.
+- Clear Disconnected has a new icon: it only tidies the list, nothing is
+  deleted.
+- Remove from List waits while you edit the asset tag, and the Device menu is
+  dimmed while the Restore or Revive window is open.
+- Settings no longer has a General tab; the app follows the Mac’s Light or
+  Dark appearance.
+- A Keychain that can’t be read is reported as such, instead of as “No Jamf
+  connection in use.”
+
 ## 1.4.0 — 2026-10-31
 
 ### New

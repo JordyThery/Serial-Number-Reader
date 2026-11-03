@@ -13,6 +13,16 @@ nonisolated enum JamfQuery: Hashable, Sendable {
     case udid(String)
 }
 
+/// Whether a Jamf Pro lookup that finds no mobile device also asks for a
+/// computer, which needs "Read Computers".
+nonisolated enum ComputerLookup: Hashable, Sendable {
+    /// Not a Mac: an iPhone-only API client must still see "No match", and
+    /// nothing refused lands in the activity log.
+    case skip
+    /// A Mac, or a device in Recovery or DFU whose model isn't known.
+    case always
+}
+
 /// An Apple device currently connected over USB, as published by `USBDeviceMonitor`.
 nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
     /// IORegistry entry ID — stable for the lifetime of the connection.
@@ -125,6 +135,19 @@ nonisolated struct USBDevice: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// Whether its Jamf Pro lookup also looks for a computer: whenever it
+    /// could be a Mac. A known model decides (a Mac: yes; an iPhone or iPad:
+    /// no). Without one, a device in Recovery or DFU may be a Mac newer than
+    /// the model list, so it is looked for; a booted device is never a Mac (a
+    /// booted Mac doesn't appear on USB).
+    var computerLookup: ComputerLookup {
+        if let modelInfo { return modelInfo.isMac ? .always : .skip }
+        switch mode {
+        case .recovery, .dfu: return .always
+        case .normal: return .skip
+        }
+    }
+
     /// The Jamf Pro or Jamf School lookup this device supports, if any.
     var jamfQuery: JamfQuery? {
         switch mode {
@@ -197,7 +220,7 @@ nonisolated enum RecoveryModeInstructions {
             """
         }
 
-        if identifier.hasPrefix("Mac") {
+        if ModelInfo(identifier: identifier, marketingName: nil).isMac {
             return """
             Apple Silicon Mac:
             1. Press and hold the power button for about 10 seconds to shut it down.

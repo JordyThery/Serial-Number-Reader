@@ -9,6 +9,10 @@ nonisolated struct ModelInfo: Equatable, Sendable {
     let marketingName: String?
 
     var displayName: String { marketingName ?? identifier }
+
+    /// A Mac: "Mac14,2", "MacBookAir10,1", "Macmini9,1", and the M1 iMac's
+    /// "iMac21,1".
+    var isMac: Bool { identifier.hasPrefix("Mac") || identifier.hasPrefix("iMac") }
 }
 
 /// Loads the bundled `AppleDeviceModels.json` resource, which maps

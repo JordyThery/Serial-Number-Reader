@@ -19,6 +19,12 @@ struct JamfNetworkTests {
         """
     private nonisolated static let noDevices = #"{"totalCount": 0, "results": []}"#
 
+    /// JTKit asks a Jamf Pro server's version once before its first computer
+    /// request (`v1` computer paths before 11.30); which test asks it first varies.
+    private nonisolated static func notVersionQuestion(_ path: String) -> Bool {
+        !path.hasSuffix("/jamf-pro-version")
+    }
+
     private func recorder(_ server: MockServer, _ log: ActivityLog, service: String) -> RequestRecorder {
         RequestRecorder(session: server.session, log: log, service: service, connection: "Test")
     }
@@ -49,7 +55,7 @@ struct JamfNetworkTests {
             urlString: "school.example.com", credentials: .jamfSchool(networkID: networkID, apiKey: apiKey)))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf School"))
 
-        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial), computers: .always).record)
         try await client.updateAssetTag("LAB+01", record: record)
 
         // The server did get the credentials…
@@ -75,7 +81,7 @@ struct JamfNetworkTests {
             urlString: "school.example.com", credentials: .jamfSchool(networkID: "1", apiKey: "key")))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf School"))
         do {
-            _ = try await client.lookup(.udid(Self.udid))
+            _ = try await client.lookup(.udid(Self.udid), computers: .always)
             Issue.record("Expected an error")
         } catch {
             #expect(!error.localizedDescription.contains("hunter2"))
@@ -98,8 +104,8 @@ struct JamfNetworkTests {
             urlString: "https://pro.example.com", credentials: .clientCredentials(clientID: "client", clientSecret: "shh-secret")))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
-        _ = try await client.lookup(.serialNumber(Self.serial))
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial), computers: .always).record)
+        _ = try await client.lookup(.serialNumber(Self.serial), computers: .always)
 
         #expect(record.kind == .mobileDevice)
         #expect(record.jamfID == "7")
@@ -130,14 +136,14 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .basic(username: "admin", password: "pa55word")))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial), computers: .always).record)
 
         #expect(record.kind == .computer)
         #expect(record.jamfID == "42")
         #expect(record.name == "Lab Mac")
-        #expect(server.requests.map(\.path) == ["/api/v1/auth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
+        #expect(server.requests.map(\.path).filter(Self.notVersionQuestion) == ["/api/v1/auth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
         #expect(server.requests[0].header("Authorization") == "Basic " + Data("admin:pa55word".utf8).base64EncodedString())
-        #expect(server.requests[2].header("Authorization") == "Bearer user-token")
+        #expect(server.requests.last?.header("Authorization") == "Bearer user-token")
         #expect(!allText(log).contains("pa55word"))
     }
 
@@ -152,11 +158,12 @@ struct JamfNetworkTests {
             urlString: "", credentials: .platform(region: .us, clientID: "id", clientSecret: "secret", environmentID: environmentID)))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Platform API"))
 
-        _ = try await client.lookup(.udid(Self.udid))
+        _ = try await client.lookup(.udid(Self.udid), computers: .always)
 
         #expect(server.requests.map(\.url.host) == ["us.api.jamfcloud.com", "us.api.jamfcloud.com"])
         #expect(server.requests.map(\.path) == ["/auth/token", "/pro/v2/mobile-devices/detail"])
-        #expect(server.requests[1].header("X-Environment-Id") == environmentID)
+        // JTKit sends it lowercased, however it was typed.
+        #expect(server.requests[1].header("X-Environment-Id") == environmentID.lowercased())
     }
 
     @Test("A 429 waits and tries again, and the wait shows in the log")
@@ -172,7 +179,7 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        let record = try #require(try await client.lookup(.serialNumber(Self.serial)).record)
+        let record = try #require(try await client.lookup(.serialNumber(Self.serial), computers: .always).record)
 
         #expect(record.jamfID == "7")
         #expect(lookups.value == 2)
@@ -262,7 +269,7 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .basic(username: "admin", password: "pw")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
 
-        let forbidden = await #expect(throws: JamfPlatform.APIError.self) { _ = try await client.lookup(.udid(Self.udid)) }
+        let forbidden = await #expect(throws: JamfPlatform.APIError.self) { _ = try await client.lookup(.udid(Self.udid), computers: .always) }
         #expect(forbidden?.message().contains("The user account is missing the “Read Mobile Devices” privilege.") == true)
 
         signIn.value = 401
@@ -283,19 +290,20 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
 
-        #expect(try await client.lookup(.serialNumber(Self.serial)) == .noMatch)
+        #expect(try await client.lookup(.serialNumber(Self.serial), computers: .always) == .noMatch)
         answer.value = #"{"totalCount": 2, "results": [{"mobileDeviceId": "7", "hardware": {"serialNumber": "\#(Self.serial)"}}, {"mobileDeviceId": "8", "hardware": {"serialNumber": "\#(Self.serial)"}}]}"#
-        #expect(try await client.lookup(.serialNumber(Self.serial)) == .multipleMatches(2))
+        #expect(try await client.lookup(.serialNumber(Self.serial), computers: .always) == .multipleMatches(2))
     }
 
-    @Test("A serial from the USB descriptor with odd characters is never sent")
+    @Test("A serial from the USB descriptor with odd characters is never sent: no match")
     func invalidIdentifier() async throws {
         let server = MockServer { _ in .json(200, #"{"access_token": "t", "expires_in": 1200}"#) }
         let config = try #require(JamfConfiguration.make(
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
-        await #expect(throws: JamfPlatform.APIError.self) { _ = try await client.lookup(.serialNumber("C02\"||1")) }
-        #expect(!server.requests.contains { $0.path.contains("mobile-devices") })
+        // JTKit 1.1: such an identifier is "not found", not an error.
+        #expect(try await client.lookup(.serialNumber("C02\"||1"), computers: .always) == .noMatch)
+        #expect(!server.requests.contains { $0.path.contains("mobile-devices") || $0.path.contains("computers") })
     }
 
     @Test("Export for Bug Report masks the serial number in the lookup address")
@@ -309,7 +317,7 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, log, service: "Jamf Pro"))
 
-        _ = try await client.lookup(.serialNumber(Self.serial))
+        _ = try await client.lookup(.serialNumber(Self.serial), computers: .always)
 
         #expect(ActivityLogExport.text(log.entries, masked: false).contains(Self.serial))
         #expect(!ActivityLogExport.text(log.entries, masked: true).contains(Self.serial))
@@ -332,13 +340,13 @@ struct JamfNetworkTests {
             urlString: "pro.example.com", credentials: .clientCredentials(clientID: "c", clientSecret: "s")))
         let client = try JamfService(configuration: config, recorder: recorder(server, ActivityLog(), service: "Jamf Pro"))
 
-        let record = try #require(try await client.lookup(.udid(macUDID)).record)
+        let record = try #require(try await client.lookup(.udid(macUDID), computers: .always).record)
 
         #expect(record.kind == .computer)
         #expect(record.jamfID == "61")
         #expect(record.name == "Lab Mac")
-        #expect(server.requests.map(\.path) == ["/api/oauth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
-        #expect(server.requests[2].queryValue("filter")?.contains(macUDID) == true)
+        #expect(server.requests.map(\.path).filter(Self.notVersionQuestion) == ["/api/oauth/token", "/api/v2/mobile-devices/detail", "/api/v4/computers-inventory"])
+        #expect(server.requests.last?.queryValue("filter")?.contains(macUDID) == true)
     }
 }
 

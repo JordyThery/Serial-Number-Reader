@@ -77,6 +77,10 @@ struct SerialNumberReaderApp: App {
             ) {
                 DemoModeSwitch(actions: appDelegate.actions, restore: appDelegate.restore)
             }
+            // The selected device's actions, as in its detail view.
+            CommandMenu("Device") {
+                DeviceMenu()
+            }
             CommandGroup(replacing: .importExport) {
                 Button("Export Session…") { SessionExport.presentSavePanel(rows: sessionRows) }
                     .keyboardShortcut("e")
@@ -91,7 +95,8 @@ struct SerialNumberReaderApp: App {
             }
         }
 
-        // JTKit's Settings window: General (Appearance), Connections, Updates.
+        // JTKit's Settings window: Connections and Updates (no General tab:
+        // the app has no general settings; it follows the Mac's appearance).
         SettingsWindow(updates: updates, opensTabsByName: true) {
             SettingsView(jamf: jamf)
                 // Settings › Connections notes that these are the real connections.
