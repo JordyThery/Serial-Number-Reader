@@ -3,9 +3,17 @@ import CoreImage.CIFilterBuiltins
 import JTKit
 import SwiftUI
 
+/// Runs the Apple Business lookup again when the serial number becomes known
+/// or the account changes.
+private struct AppleBusinessLookupKey: Hashable {
+    let serial: String?
+    let generation: Int
+}
+
 struct DeviceDetailView: View {
     let device: USBDevice
     let jamf: JamfStore
+    let appleBusiness: AppleBusinessStore
     /// Shared app-wide so only one action runs at a time (the VDM path
     /// targets a port, not a specific device) and errors survive selection
     /// changes.
@@ -45,10 +53,19 @@ struct DeviceDetailView: View {
             }
 
             jamfSection
+
+            if appleBusiness.isConfigured {
+                appleBusinessSection
+            }
         }
         .formStyle(.grouped)
         .navigationSubtitle(device.modelDisplayName)
         .task { monitor.refreshTrust(deviceID: device.id) }
+        // The serial number is known from the device (Recovery) or, in Normal
+        // mode, once Jamf has answered; an account change looks up again.
+        .task(id: AppleBusinessLookupKey(serial: knownSerial, generation: appleBusiness.configurationGeneration)) {
+            appleBusiness.lookupIfNeeded(serial: knownSerial)
+        }
         .sheet(isPresented: $showingRestore) {
             RestoreSheet(device: device, serialNumber: knownSerial, jamfName: jamfRecord?.name, restore: restore)
         }
@@ -367,6 +384,100 @@ struct DeviceDetailView: View {
                 }
             }
         }
+    }
+
+    // MARK: Apple Business / School Manager
+
+    private var appleBusinessSection: some View {
+        Section(appleBusiness.productName) {
+            switch appleBusiness.state(forSerial: knownSerial) {
+            case .notConfigured:
+                EmptyView()
+
+            case .unavailable(let reason):
+                Text(reason)
+                    .foregroundStyle(.secondary)
+
+            case .loading:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking up…")
+                        .foregroundStyle(.secondary)
+                }
+
+            case .found(let record):
+                appleBusinessRecordRows(record)
+
+            case .notInOrganization:
+                Label("This device isn’t in your \(appleBusiness.productName) organization.", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+                appleBusinessRetryButton
+
+            case .failed(let message):
+                TintedLabel(message, systemImage: "xmark.octagon.fill", tint: .red)
+                    .textSelection(.enabled)
+                appleBusinessRetryButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func appleBusinessRecordRows(_ record: AppleBusinessRecord) -> some View {
+        let device = record.device
+        CopyableRow(label: "Serial Number", value: device.serialNumber, showsQR: true)
+        if let model = device.deviceModel {
+            LabeledContent("Model", value: model)
+        }
+        if let family = device.productFamily {
+            LabeledContent("Product Family", value: family.capitalized)
+        }
+        LabeledContent("Status") {
+            TintedLabel(AppleBusinessText.status(device),
+                        systemImage: device.isReleased ? "xmark.seal" : "checkmark.seal.fill",
+                        tint: device.isReleased ? .secondary : .green)
+        }
+        LabeledContent("MDM Server", value: record.mdmServerName ?? "None")
+        if let order = device.orderNumber {
+            LabeledContent("Order Number", value: order)
+        }
+        if let source = AppleBusinessText.purchaseSource(device) {
+            LabeledContent("Purchase Source", value: source)
+        }
+        if let added = device.addedToOrgDateTime.flatMap(ABM.date) {
+            LabeledContent("Added", value: added.formatted(date: .abbreviated, time: .omitted))
+        }
+        if let problem = record.coverageProblem {
+            TintedLabel("AppleCare couldn’t be read: \(problem)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                .textSelection(.enabled)
+        } else if record.coverage.isEmpty {
+            LabeledContent("AppleCare", value: "No coverage listed")
+        } else {
+            ForEach(record.coverage) { coverage in
+                LabeledContent(coverage.description ?? "AppleCare") {
+                    Text(AppleBusinessText.coverage(coverage))
+                        .foregroundStyle(coverage.isActive ? Color.primary : Color.secondary)
+                }
+            }
+        }
+        HStack {
+            if let url = appleBusiness.portalURL {
+                Link(destination: url) {
+                    Label("Open in \(appleBusiness.portalName)", systemImage: "arrow.up.forward.app")
+                }
+                .help("Opens \(appleBusiness.portalName); search for the serial number there")
+            }
+            Spacer()
+            appleBusinessRetryButton
+        }
+    }
+
+    private var appleBusinessRetryButton: some View {
+        Button {
+            appleBusiness.refresh(serial: knownSerial)
+        } label: {
+            Label("Retry Lookup", systemImage: "arrow.clockwise")
+        }
+        .help("Run the \(appleBusiness.productName) lookup again")
     }
 
     // MARK: Jamf

@@ -46,6 +46,7 @@ struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
     @State private var jamf = JamfStore(connections: AppDemo.connections(), activityLog: .app, demo: AppDemo.mode)
+    @State private var appleBusiness = AppleBusinessStore(connections: AppDemo.appleBusinessConnections(), activityLog: .app, demo: AppDemo.mode)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -57,7 +58,7 @@ struct SerialNumberReaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(monitor: monitor, jamf: jamf, actions: appDelegate.actions, restore: appDelegate.restore)
+            ContentView(monitor: monitor, jamf: jamf, appleBusiness: appleBusiness, actions: appDelegate.actions, restore: appDelegate.restore)
                 .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
                 .task {
@@ -101,6 +102,8 @@ struct SerialNumberReaderApp: App {
             SettingsView(jamf: jamf)
                 // Settings › Connections notes that these are the real connections.
                 .environment(AppDemo.mode)
+            AppleBusinessSettingsView(store: appleBusiness)
+                .environment(AppDemo.mode)
         }
 
         AboutWindow(configuration: .serialNumberReader)
@@ -112,9 +115,18 @@ struct SerialNumberReaderApp: App {
         )
     }
 
+    /// The Apple Business lookup of a device, as far as it already ran (never
+    /// starts one): the serial from the device, or from its Jamf record.
+    private func appleBusinessState(for device: USBDevice) -> AppleBusinessLookupState? {
+        guard appleBusiness.isConfigured else { return nil }
+        var serial = device.serialNumber
+        if serial == nil, case .found(let record) = jamf.state(for: device) { serial = record.serialNumber }
+        return appleBusiness.stateSoFar(forSerial: serial)
+    }
+
     /// The device list in connection order (oldest first), as export rows.
     private var sessionRows: [SessionExport.Row] {
-        monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0)) }
+        monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0), appleBusiness: appleBusinessState(for: $0)) }
     }
 }
 

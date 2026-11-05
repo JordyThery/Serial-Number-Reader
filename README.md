@@ -4,7 +4,7 @@
 
 # Serial Number Reader
 
-*Read serial numbers from plugged-in iPhones, iPads and Macs and look them up in Jamf.*
+*Read serial numbers from plugged-in iPhones, iPads and Macs and look them up in Jamf and Apple Business Manager.*
 
 [![Latest release](https://img.shields.io/github/v/release/JordyThery/Serial-Number-Reader?label=release)](https://github.com/JordyThery/Serial-Number-Reader/releases/latest)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
@@ -22,6 +22,7 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 - **DFU mode** — detects the device and shows the model-specific button sequence to reach Recovery. Current devices expose no identifiers over USB in DFU; with Apple Configurator installed, the model, ECID and UDID are filled in automatically, and the serial number follows from Jamf (iPhones and iPads as mobile devices, Macs as computers).
 - **Restore and Revive** — for devices in DFU or Recovery mode, through Apple Configurator: **Restore** erases the device and installs the latest or a specific IPSW (checked against the model and Apple’s signing status before anything is erased; a device whose model is unknown can only get the latest version); **Revive** reinstalls the OS and keeps the content. One device at a time, with a progress banner and log; quitting during a restore asks first.
 - **Jamf Pro and Jamf School lookup** by serial or UDID — Jamf Pro directly or through the **Jamf Platform API** — showing the device’s Jamf name, serial, UDID, model, OS version, managed state, assigned user and last inventory date, with an **editable asset tag** and a link to the record.
+- **Apple Business / School Manager lookup** (optional) — once the serial number is known (read in Recovery mode, or from Jamf in Normal mode), the device is looked up in your organization’s Apple Business Manager or Apple School Manager: model, product family, status (assigned, unassigned or released), assigned MDM server, order number, purchase source, date added and AppleCare coverage with its end date, plus an **Open in Apple Business Manager** (or School Manager) link to the portal. Nothing is shown until an API account is configured.
 - **Several saved connections** — switch between them with the picker in the toolbar or the **Connection** menu.
 - **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU a USB-C device, even when it’s unresponsive.
 - **Session export** — save every device from the session as CSV (**File › Export Session…**, ⌘E), or copy all serial numbers at once (**File › Copy All Serial Numbers**, ⇧⌘C). **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click, the Delete key, or **Device › Remove from List**, ⌘⌫) tidy the list.
@@ -66,10 +67,27 @@ Open **Settings › Connections** and add a connection with **+**. **Test Connec
 
 Settings from versions before saved connections are converted once, automatically; the old settings are left as they were.
 
+### Apple Business / School Manager
+
+This is optional; without an API account the app never contacts Apple Business or Apple School Manager and shows no section for it.
+
+**Create the API account.** You need the **Organization Administrator** role (Apple School Manager: Administrator or Site Manager).
+
+1. Sign in to [Apple Business Manager](https://business.apple.com) or [Apple School Manager](https://school.apple.com) and open the **API** section of your account’s preferences.
+2. Create an API account and give it access to the organization’s **devices** and their device management service assignments (read access is enough; AppleCare coverage is read through the same device access). The app only reads; it never changes anything in your organization.
+3. Download the **private key** (a `.pem` file) when it is shown — Apple shows it only once — and note the **Client ID** and **Key ID**.
+
+**Configure the app.** Open **Settings › Apple Business**, add an account with **+**, choose **Apple Business Manager** or **Apple School Manager**, and enter the Client ID and Key ID. Paste the private key or import the `.pem` file, then click **Test Connection**. Select a device in the sidebar: its Apple Business section appears below the Jamf section once the serial number is known. The app signs in with OAuth 2.0 client credentials and a short-lived ES256 client assertion, and keeps the access token until shortly before it expires. Apple allows about 20 requests a minute per organization; the app stays under that and waits when asked to.
+
+The **Open in Apple Business Manager** link opens the portal’s start page (Apple documents no address for a single device); use the serial number’s copy button to search for it there.
+
+The CSV export has two extra columns at the end, **Apple Business Status** and **Apple Business MDM Server**, filled for devices that were looked up.
+
 ### Where data is stored
 
 - **Connections** — as JSON in the app’s preferences (UserDefaults key `jamfConnections`), without secrets.
 - **Secrets** (client secrets, passwords, API keys) — in the macOS Keychain, service `be.jordythery.SerialNumberReader.jamf`, never in preferences.
+- **Apple Business / School Manager accounts** — client ID and key ID as JSON in the app’s preferences (UserDefaults key `appleBusinessConnections`); the private key in the Keychain, service `be.jordythery.SerialNumberReader.appleBusiness`, never in preferences or logs.
 - **Activity log** — in memory only; nothing is written to disk unless you export it.
 - **System log** — serial numbers, UDIDs, ECIDs and server answers are logged as private, so macOS hides them in Console.
 
@@ -79,11 +97,11 @@ The CPID/BDID → model mapping lives in [`AppleDeviceModels.json`](Serial%20Num
 
 ### Network use
 
-Besides Jamf Pro or Jamf School, the app contacts GitHub (update check, can be turned off) and, when preparing a Restore, the public [ipsw.me](https://ipsw.me) data to show the latest signed version and check an IPSW’s signing status — only the model identifier and build number are sent. For a Restore without a chosen IPSW, and for a Revive, Apple Configurator downloads the software from Apple.
+Besides Jamf Pro or Jamf School, and Apple Business or School Manager when an API account is configured (`account.apple.com` for sign-in, `api-business.apple.com` or `api-school.apple.com` for lookups), the app contacts GitHub (update check, can be turned off) and, when preparing a Restore, the public [ipsw.me](https://ipsw.me) data to show the latest signed version and check an IPSW’s signing status — only the model identifier and build number are sent. For a Restore without a chosen IPSW, and for a Revive, Apple Configurator downloads the software from Apple.
 
 ## Building from source
 
-Open `Serial Number Reader.xcodeproj` in Xcode 26 or later and build the **Serial Number Reader** scheme. The app’s only package dependency is [JTKit](https://github.com/JordyThery/JTKit), the shared package of these apps (version pinned in `Package.resolved`); resolving it also downloads Microsoft’s MSAL, which JTKit uses for Intune sign-in and which this app doesn’t link or ship. Unit tests (Swift Testing) cover the USB descriptor parser, UDID and ECID handling, Configurator output parsing, IPSW checks, usbmuxd and lockdown framing, the pairing checks of the trusted connection, the safeguards of the power actions, connection conversion, the Jamf networking (on a fake server), the CSV export, the device list, the activity log entries, Demo Mode, the guard that keeps tests away from real USB devices and saved connections, and the acknowledgement. A UI smoke test runs the app in Demo Mode.
+Open `Serial Number Reader.xcodeproj` in Xcode 26 or later and build the **Serial Number Reader** scheme. The app’s only package dependency is [JTKit](https://github.com/JordyThery/JTKit), the shared package of these apps (version pinned in `Package.resolved`); resolving it also downloads Microsoft’s MSAL, which JTKit uses for Intune sign-in and which this app doesn’t link or ship. Unit tests (Swift Testing) cover the USB descriptor parser, UDID and ECID handling, Configurator output parsing, IPSW checks, usbmuxd and lockdown framing, the pairing checks of the trusted connection, the safeguards of the power actions, connection conversion, the Jamf networking (on a fake server), the Apple Business lookup (sign-in request and signature, token caching, results and errors on a fake server), the CSV export, the device list, the activity log entries, Demo Mode, the guard that keeps tests away from real USB devices and saved connections, and the acknowledgement. A UI smoke test runs the app in Demo Mode.
 
 The app runs outside the App Sandbox: it needs direct IOKit access for USB enumeration, and the USB-C power actions use the private `AppleHPM` port-controller interface, which requires root (the app re-launches itself with administrator privileges for those actions only).
 
@@ -94,6 +112,7 @@ The app runs outside the App Sandbox: it needs direct IOKit access for USB enume
 - `ModelDatabase` — loads the bundled CPID/BDID model map.
 - `USBHardware` / `DemoUSB` — the one doorway to real devices (lockdown, iBoot, the power actions, `cfgutil`), and Demo Mode’s pretend iPhone, which never reaches it.
 - `JamfClient` / `JamfStore` — the app’s Jamf lookups and asset-tag updates on JTKit’s Jamf Pro (direct or through the Platform API gateway) and Jamf School clients, and their UI-facing state.
+- `AppleBusinessStore` / `AppleBusinessConnection` / `AppleBusinessSettingsView` — the optional Apple Business and School Manager lookup on JTKit’s ABM client (`ABM.Client`: OAuth with a signed client assertion, token caching, rate limit), its UI-facing state per serial number, the saved API accounts with the private key in the Keychain, and the Settings tab. `AppleBusinessText` words the values for the detail view and the CSV export.
 - `JamfConnection` / `LegacySettingsConversion` — the saved connections, and the one-time conversion of older settings.
 - `Usbmux` / `LockdownTLS` — minimal usbmuxd/lockdown client: unpaired device details, and Enter Recovery — unpaired, or over a trusted (paired) TLS session where iOS requires it.
 - `Configurator` / `RestoreController` — runs Apple Configurator’s `cfgutil` to identify devices, Restore, Revive and remove trust, and tracks a running Restore or Revive.
