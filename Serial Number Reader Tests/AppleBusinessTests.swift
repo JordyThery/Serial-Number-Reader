@@ -1,0 +1,415 @@
+import CryptoKit
+import Foundation
+import JTKit
+import JTKitTestSupport
+import Testing
+@testable import Serial_Number_Reader
+
+/// Apple Business and Apple School Manager lookups on JTKit's client, against
+/// a fake Apple: the store's states, the sign-in as the app sends it, and the
+/// app's wording. Only throwaway keys made here; no real credentials.
+@MainActor
+@Suite("Apple Business lookup")
+struct AppleBusinessTests {
+    private nonisolated static let serial = "PLACEHOLDR05"
+    private nonisolated static let clientID = "BUSINESSAPI.00000000-0000-0000-0000-000000000000"
+    private nonisolated static let keyID = "key-id-placeholder"
+    private nonisolated static let token = "SECRET-access-token-0123456789"
+
+    // Fixtures shaped like the documented responses (JSON:API: `data` with `attributes`).
+    private nonisolated static let deviceJSON = """
+        {"data": {"id": "\(serial)", "type": "orgDevices", "attributes": {
+          "serialNumber": "\(serial)", "deviceModel": "iPad Air 11-inch", "productFamily": "iPad",
+          "productType": "iPad14,8", "status": "ASSIGNED", "orderNumber": "ORDER-PLACEHOLDER",
+          "purchaseSourceType": "RESELLER", "purchaseSourceId": "RS-1",
+          "addedToOrgDateTime": "2026-03-12T09:30:00.000Z", "color": "BLUE", "someNewField": {"x": 1}}}}
+        """
+    private nonisolated static let assignedServerJSON = #"{"data": {"type": "mdmServers", "id": "SERVER-1"}}"#
+    private nonisolated static let mdmServersJSON = """
+        {"data": [{"id": "SERVER-1", "type": "mdmServers", "attributes": {"serverName": "Lab MDM", "serverType": "MDM"}},
+                  {"id": "SERVER-2", "type": "mdmServers", "attributes": {"serverName": "Other"}}]}
+        """
+    private nonisolated static let coverageJSON = """
+        {"data": [{"id": "AC-1", "type": "appleCareCoverage", "attributes": {
+          "description": "AppleCare+", "status": "ACTIVE",
+          "startDateTime": "2026-03-12T00:00:00.000Z", "endDateTime": "2028-03-12T00:00:00.000Z"}}]}
+        """
+
+    private struct Rig {
+        let server: MockServer
+        let store: AppleBusinessStore
+        let settings: TemporaryDefaults
+        let pem: String
+        let key: P256.Signing.PrivateKey
+        let secrets: InMemorySecretStore
+        let log: ActivityLog
+
+        var signIns: [RecordedRequest] { server.requests.filter { $0.url.host() == "account.apple.com" } }
+        var api: [RecordedRequest] { server.requests.filter { $0.url.host() != "account.apple.com" } }
+    }
+
+    /// A fake Apple: `route` first, then sign-in, then 404.
+    private func makeRig(service: ConnectionService = .appleBusinessManager, saved: Bool = true,
+                     route: @escaping @Sendable (RecordedRequest) -> MockResponse? = { _ in nil }) throws -> Rig {
+        let server = MockServer { request in
+            if request.url.host() == "account.apple.com" {
+                return .json(200, #"{"access_token": "\#(Self.token)", "token_type": "Bearer", "expires_in": 3600}"#)
+            }
+            if let answer = route(request) { return answer }
+            switch request.path {
+            case "/v1/orgDevices/\(Self.serial)": return .json(200, Self.deviceJSON)
+            case "/v1/orgDevices/\(Self.serial)/relationships/assignedServer": return .json(200, Self.assignedServerJSON)
+            case "/v1/orgDevices/\(Self.serial)/appleCareCoverage": return .json(200, Self.coverageJSON)
+            case "/v1/mdmServers": return .json(200, Self.mdmServersJSON)
+            default: return .json(404, #"{"errors": [{"status": "404", "code": "NOT_FOUND", "title": "Not Found"}]}"#)
+            }
+        }
+        let key = P256.Signing.PrivateKey()
+        let settings = TemporaryDefaults("applebusiness")
+        let secrets = InMemorySecretStore()
+        let connections = AppleBusinessConnectionStore(defaults: settings.defaults, secrets: secrets)
+        if saved {
+            let record = AppleBusinessConnection(name: "Lab Org", service: service, signIn: .applePrivateKey,
+                                                 clientID: Self.clientID, keyID: Self.keyID)
+            try connections.connections.save(record, secrets: [.main: key.pemRepresentation])
+            connections.activeID = record.id
+        }
+        let log = ActivityLog()
+        let store = AppleBusinessStore(connections: connections, activityLog: log, session: server.session)
+        return Rig(server: server, store: store, settings: settings, pem: key.pemRepresentation, key: key,
+                   secrets: secrets, log: log)
+    }
+
+    private func finished(_ store: AppleBusinessStore, _ serial: String = AppleBusinessTests.serial) async -> AppleBusinessLookupState {
+        store.lookupIfNeeded(serial: serial)
+        for _ in 0..<500 where store.state(forSerial: serial) == .loading {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return store.state(forSerial: serial)
+    }
+
+    // MARK: Optional feature
+
+    @Test("Without a saved account the feature is off and nothing is sent")
+    func notConfigured() async throws {
+        let rig = try makeRig(saved: false)
+        #expect(!rig.store.isConfigured)
+        #expect(rig.store.state(forSerial: Self.serial) == .notConfigured)
+        rig.store.lookupIfNeeded(serial: Self.serial)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.server.requests.isEmpty)
+    }
+
+    @Test("An account without key ID or private key is incomplete, so the feature stays off")
+    func incompleteAccount() {
+        let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                             clientID: Self.clientID, keyID: "")
+        #expect(AppleBusinessStore.configuration(for: record, privateKey: "pem") == nil)
+        var complete = record
+        complete.keyID = Self.keyID
+        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "  ") == nil)
+        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "pem") != nil)
+        // A Jamf service is never an Apple account.
+        complete.service = .jamfPro
+        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "pem") == nil)
+    }
+
+    @Test("No serial number yet: nothing to look up")
+    func noSerial() throws {
+        let rig = try makeRig()
+        #expect(rig.store.state(forSerial: nil) == .unavailable("No serial number to look up yet"))
+        #expect(rig.store.state(forSerial: "  ") == .unavailable("No serial number to look up yet"))
+    }
+
+    // MARK: Sign-in
+
+    private func segments(_ jwt: String) throws -> (header: [String: Any], claims: [String: Any], input: Data, signature: Data) {
+        let parts = jwt.split(separator: ".", omittingEmptySubsequences: false)
+        try #require(parts.count == 3)
+        func decode(_ part: Substring) throws -> Data {
+            var text = part.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            while text.count % 4 != 0 { text += "=" }
+            return try #require(Data(base64Encoded: text))
+        }
+        func object(_ data: Data) throws -> [String: Any] {
+            try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        return (try object(decode(parts[0])), try object(decode(parts[1])),
+                Data("\(parts[0]).\(parts[1])".utf8), try decode(parts[2]))
+    }
+
+    @Test("The sign-in is a form with client credentials and a client assertion signed ES256 in raw r||s")
+    func signInRequest() async throws {
+        let rig = try makeRig()
+        _ = await finished(rig.store)
+        let signIn = try #require(rig.signIns.first)
+        #expect(signIn.method == "POST")
+        #expect(signIn.header("Content-Type")?.hasPrefix("application/x-www-form-urlencoded") == true)
+
+        var components = URLComponents()
+        components.percentEncodedQuery = signIn.bodyString
+        let form = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(form["grant_type"] == "client_credentials")
+        #expect(form["client_id"] == Self.clientID)
+        #expect(form["client_assertion_type"] == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+        #expect(form["scope"] == "business.api")
+
+        let jwt = try segments(try #require(form["client_assertion"]))
+        #expect(jwt.header["alg"] as? String == "ES256")
+        #expect(jwt.header["kid"] as? String == Self.keyID)
+        #expect(jwt.claims["iss"] as? String == Self.clientID)
+        #expect(jwt.claims["sub"] as? String == Self.clientID)
+        #expect(jwt.claims["aud"] as? String == signIn.url.absoluteString)
+        let issuedAt = try #require(jwt.claims["iat"] as? Double)
+        let expires = try #require(jwt.claims["exp"] as? Double)
+        #expect(expires > issuedAt && expires - issuedAt <= 20 * 60)
+        #expect(!(jwt.claims["jti"] as? String ?? "").isEmpty)
+        // Raw r||s (64 bytes), not DER, and valid for the key's public half.
+        #expect(jwt.signature.count == 64)
+        let signature = try P256.Signing.ECDSASignature(rawRepresentation: jwt.signature)
+        #expect(rig.key.publicKey.isValidSignature(signature, for: jwt.input))
+    }
+
+    @Test("Apple School Manager signs in with the school scope and uses its own address")
+    func schoolManager() async throws {
+        let rig = try makeRig(service: .appleSchoolManager)
+        #expect(rig.store.productName == "Apple School Manager")
+        _ = await finished(rig.store)
+        #expect(rig.signIns.first?.bodyString.contains("scope=school.api") == true)
+        #expect(rig.api.allSatisfy { $0.url.host() == "api-school.apple.com" })
+    }
+
+    @Test("Every assertion has its own jti")
+    func uniqueJTI() async throws {
+        var ids = Set<String>()
+        for _ in 0..<2 {
+            let rig = try makeRig()
+            _ = await finished(rig.store)
+            var components = URLComponents()
+            components.percentEncodedQuery = try #require(rig.signIns.first).bodyString
+            let assertion = try #require(components.queryItems?.first { $0.name == "client_assertion" }?.value)
+            ids.insert(try #require(try segments(assertion).claims["jti"] as? String))
+        }
+        #expect(ids.count == 2)
+    }
+
+    @Test("The access token is cached: several lookups sign in once, and it is sent as a Bearer token")
+    func tokenCached() async throws {
+        let rig = try makeRig { request in
+            request.path.hasPrefix("/v1/orgDevices/OTHER") ? .json(404, #"{"errors": []}"#) : nil
+        }
+        _ = await finished(rig.store)
+        _ = await finished(rig.store, "OTHER00001")
+        #expect(rig.signIns.count == 1)
+        #expect(rig.api.allSatisfy { $0.header("Authorization") == "Bearer \(Self.token)" })
+    }
+
+    @Test("Lookups at the same moment share one sign-in")
+    func concurrentLookupsShareSignIn() async throws {
+        let rig = try makeRig { _ in nil }
+        let serials = (1...5).map { "CONCURR\($0)" }
+        for serial in serials { rig.store.lookupIfNeeded(serial: serial) }
+        for serial in serials {
+            for _ in 0..<500 where rig.store.state(forSerial: serial) == .loading {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        #expect(rig.signIns.count == 1)
+    }
+
+    // MARK: Results
+
+    @Test("A device with its MDM server name and AppleCare coverage")
+    func foundDevice() async throws {
+        let rig = try makeRig()
+        guard case .found(let record) = await finished(rig.store) else {
+            Issue.record("Expected a found device, got \(rig.store.state(forSerial: Self.serial))")
+            return
+        }
+        #expect(record.device.serialNumber == Self.serial)
+        #expect(record.device.deviceModel == "iPad Air 11-inch")
+        #expect(record.device.productFamily == "iPad")
+        #expect(record.device.orderNumber == "ORDER-PLACEHOLDER")
+        #expect(record.device.addedToOrgDateTime == "2026-03-12T09:30:00.000Z")
+        #expect(AppleBusinessText.status(record.device) == "Assigned")
+        #expect(AppleBusinessText.purchaseSource(record.device) == "Reseller (RS-1)")
+        #expect(record.mdmServerName == "Lab MDM")
+        #expect(record.coverage.count == 1)
+        #expect(record.coverage.first?.isActive == true)
+        #expect(AppleBusinessText.coverage(record.coverage[0]).hasPrefix("Active until"))
+        #expect(record.coverageProblem == nil)
+        #expect(rig.api.map(\.path).contains("/v1/orgDevices/\(Self.serial)/relationships/assignedServer"))
+    }
+
+    @Test("The serial number is looked up uppercase and trimmed")
+    func serialNormalized() async throws {
+        let rig = try makeRig()
+        guard case .found = await finished(rig.store, " placeholdr05 ") else {
+            Issue.record("Expected a found device")
+            return
+        }
+        #expect(rig.api.first?.path == "/v1/orgDevices/\(Self.serial)")
+    }
+
+    @Test("An unassigned device has no MDM server")
+    func unassigned() async throws {
+        let rig = try makeRig { request in
+            request.path.hasSuffix("/relationships/assignedServer") ? .json(200, #"{"data": null}"#) : nil
+        }
+        guard case .found(let record) = await finished(rig.store) else {
+            Issue.record("Expected a found device")
+            return
+        }
+        #expect(record.mdmServerName == nil)
+    }
+
+    @Test("A failed coverage request doesn't fail the lookup")
+    func coverageFailure() async throws {
+        let rig = try makeRig { request in
+            request.path.hasSuffix("/appleCareCoverage")
+                ? .json(500, #"{"errors": [{"status": "500", "code": "INTERNAL", "title": "Broken"}]}"#, headers: ["Retry-After": "0"])
+                : nil
+        }
+        guard case .found(let record) = await finished(rig.store) else {
+            Issue.record("Expected a found device")
+            return
+        }
+        #expect(record.device.serialNumber == Self.serial)
+        #expect(record.coverage.isEmpty)
+        #expect(record.coverageProblem != nil)
+    }
+
+    // MARK: Errors
+
+    @Test("404: the device isn't in the organization")
+    func notInOrganization() async throws {
+        let rig = try makeRig()
+        #expect(await finished(rig.store, "UNKNOWN001") == .notInOrganization)
+    }
+
+    @Test("401 and 403 on the device: a message from Apple's answer, never the token")
+    func authorizationErrors() async throws {
+        for status in [401, 403] {
+            let rig = try makeRig { request in
+                request.path == "/v1/orgDevices/\(Self.serial)"
+                    ? .json(status, #"{"errors": [{"status": "\#(status)", "code": "NOT_AUTHORIZED", "title": "Not allowed", "detail": "Token \#(Self.token) refused"}]}"#)
+                    : nil
+            }
+            guard case .failed(let message) = await finished(rig.store) else {
+                Issue.record("Expected a failure for \(status)")
+                continue
+            }
+            #expect(message.contains("\(status)"))
+            #expect(!message.contains(Self.token))
+        }
+    }
+
+    @Test("Apple's sign-in refusing the account is shown, without the assertion or key")
+    func signInRefused() async throws {
+        let server = MockServer { _ in
+            .json(400, #"{"error": "invalid_client", "error_description": "Client assertion is not valid"}"#)
+        }
+        let settings = TemporaryDefaults("applebusiness")
+        let key = P256.Signing.PrivateKey()
+        let connections = AppleBusinessConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                             clientID: Self.clientID, keyID: Self.keyID)
+        try connections.connections.save(record, secrets: [.main: key.pemRepresentation])
+        connections.activeID = record.id
+        let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: server.session)
+        guard case .failed(let message) = await finished(store) else {
+            Issue.record("Expected a failure")
+            return
+        }
+        #expect(message.contains("invalid_client"))
+        #expect(!message.contains("BEGIN"))
+    }
+
+    @Test("429 is retried after Retry-After; a lasting 429 is shown as a failure")
+    func rateLimited() async throws {
+        let calls = LockedCounter()
+        let rig = try makeRig { request in
+            guard request.path == "/v1/orgDevices/\(Self.serial)" else { return nil }
+            return calls.next() == 1
+                ? .json(429, #"{"errors": [{"status": "429", "code": "RATE_LIMIT", "title": "Too many requests"}]}"#,
+                        headers: ["Retry-After": "0"])
+                : nil
+        }
+        guard case .found = await finished(rig.store) else {
+            Issue.record("Expected the retry to succeed")
+            return
+        }
+        #expect(calls.value == 2)
+
+        let lasting = try makeRig { request in
+            request.path == "/v1/orgDevices/\(Self.serial)"
+                ? .json(429, #"{"errors": [{"status": "429", "code": "RATE_LIMIT", "title": "Too many requests"}]}"#,
+                        headers: ["Retry-After": "0"])
+                : nil
+        }
+        guard case .failed(let message) = await finished(lasting.store) else {
+            Issue.record("Expected a failure")
+            return
+        }
+        #expect(message.contains("429"))
+    }
+
+    // MARK: Test Connection, secrets, export
+
+    @Test("Test Connection signs in with the typed private key and counts the MDM servers")
+    func testConnection() async throws {
+        let rig = try makeRig(saved: false)
+        let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                             clientID: Self.clientID, keyID: Self.keyID)
+        let message = try await rig.store.testConnection(record, typedSecret: rig.pem)
+        #expect(message == "Connected · Apple Business · 2 device management services")
+        #expect(rig.signIns.count == 1)
+        await #expect(throws: JamfSetupError(message: "Fill in the client ID, key ID and private key first.")) {
+            try await rig.store.testConnection(record, typedSecret: "")
+        }
+    }
+
+    @Test("The private key lives only in the secrets store: not in the settings, not in the activity log")
+    func keyStaysSecret() async throws {
+        let rig = try makeRig()
+        _ = await finished(rig.store)
+        let body = rig.pem.split(separator: "\n").dropFirst().dropLast().joined()
+        // The list is JSON data in the settings: read it as text.
+        let stored = rig.settings.defaults.dictionaryRepresentation().values
+            .map { ($0 as? Data).map { String(decoding: $0, as: UTF8.self) } ?? "\($0)" }.joined()
+        #expect(!stored.contains(body))
+        #expect(stored.contains(Self.clientID))
+        #expect(rig.secrets.secret(for: try #require(rig.store.connections.activeID).uuidString) == rig.pem)
+        let logged = rig.log.entries.map(ActivityLogExport.transcript(of:)).joined()
+            + ActivityLogExport.text(rig.log.entries, masked: false)
+        #expect(!logged.contains(body))
+        #expect(!logged.contains(Self.token))
+    }
+
+    @Test("The CSV has the two Apple Business columns, empty when the feature is off")
+    func exportColumns() async throws {
+        let rig = try makeRig()
+        let state = await finished(rig.store)
+        let device = USBDevice(id: 1, mode: .recovery, productID: 0x1281, usbProductName: nil,
+                               descriptor: DescriptorParser.parse("CPID:6060 BDID:0A ECID:001A2B3C4D5E6F72 SRNM:[\(Self.serial)]"),
+                               udid: nil, modelInfo: nil, connectedAt: .now)
+        let row = SessionExport.row(for: device, jamf: .notConfigured, appleBusiness: state)
+        #expect(row.appleBusinessStatus == "Assigned")
+        #expect(row.appleBusinessMDMServer == "Lab MDM")
+        #expect(SessionExport.header.suffix(2) == ["Apple Business Status", "Apple Business MDM Server"])
+        #expect(SessionExport.csv([row]).contains("Assigned,Lab MDM"))
+
+        let off = SessionExport.row(for: device, jamf: .notConfigured)
+        #expect(off.appleBusinessStatus.isEmpty && off.appleBusinessMDMServer.isEmpty)
+        #expect(AppleBusinessText.exportStatus(.notInOrganization) == "Not in organization")
+        #expect(AppleBusinessText.exportStatus(.failed("x")) == "Failed")
+    }
+}
+
+/// Counts calls from the fake server's handler, which runs off the main actor.
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func next() -> Int { lock.withLock { count += 1; return count } }
+    var value: Int { lock.withLock { count } }
+}
