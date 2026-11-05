@@ -42,6 +42,11 @@ extension JamfStore {
     static var preview: JamfStore { JamfStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode) }
 }
 
+extension AppleBusinessStore {
+    /// A throwaway, empty list of accounts without Keychain; demo mode's organization.
+    static var preview: AppleBusinessStore { AppleBusinessStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode) }
+}
+
 extension DeviceActionController {
     static var preview: DeviceActionController {
         DeviceActionController(hardware: NoUSBHardware(), demo: PreviewSupport.usb)

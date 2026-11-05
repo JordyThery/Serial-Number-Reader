@@ -25,4 +25,14 @@ enum AppDemo {
         if DemoMode.isSandboxLaunch { return JamfConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore()) }
         return JamfConnectionStore()
     }
+
+    /// The saved Apple Business and School Manager accounts for this launch,
+    /// kept as safe as `connections()`.
+    static func appleBusinessConnections() -> AppleBusinessConnectionStore {
+        if TestRun.isUnitTestHost { return .forUnitTestHost() }
+        if DemoMode.isSandboxLaunch {
+            return AppleBusinessConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
+        }
+        return AppleBusinessConnectionStore()
+    }
 }
