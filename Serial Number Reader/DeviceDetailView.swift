@@ -460,6 +460,12 @@ struct DeviceDetailView: View {
             }
         }
         HStack {
+            if let url = appleBusiness.portalURL {
+                Link(destination: url) {
+                    Label("Open in \(appleBusiness.portalName)", systemImage: "arrow.up.forward.app")
+                }
+                .help("Opens \(appleBusiness.portalName); search for the serial number there")
+            }
             Spacer()
             appleBusinessRetryButton
         }

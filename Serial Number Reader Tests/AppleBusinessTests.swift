@@ -241,6 +241,19 @@ struct AppleBusinessTests {
         #expect(rig.api.map(\.path).contains("/v1/orgDevices/\(Self.serial)/relationships/assignedServer"))
     }
 
+    @Test("The Open in link goes to the portal of the account in use, and not in demo mode")
+    func portalLink() throws {
+        let business = try makeRig()
+        #expect(business.store.portalURL == URL(string: "https://business.apple.com"))
+        #expect(business.store.portalName == "Apple Business Manager")
+        let school = try makeRig(service: .appleSchoolManager)
+        #expect(school.store.portalURL == URL(string: "https://school.apple.com"))
+        #expect(school.store.portalName == "Apple School Manager")
+        #expect(try makeRig(saved: false).store.portalURL == nil)
+        let demo = AppleBusinessStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode)
+        #expect(demo.portalURL == nil)
+    }
+
     @Test("The serial number is looked up uppercase and trimmed")
     func serialNormalized() async throws {
         let rig = try makeRig()

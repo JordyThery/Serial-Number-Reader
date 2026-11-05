@@ -99,6 +99,27 @@ final class AppleBusinessStore {
         return connections.activeConnection.flatMap { ABM.Service($0.service) }?.label ?? ABM.Service.business.label
     }
 
+    /// The web portal of the account in use, for "Open in Apple Business
+    /// Manager" / "Open in Apple School Manager"; nil in demo mode (the demo
+    /// organization has no web pages) and without an account. Apple documents
+    /// no address for a single device, so the link opens the portal itself.
+    var portalURL: URL? {
+        guard !isDemo, let service = connections.activeConnection.flatMap({ ABM.Service($0.service) }) else { return nil }
+        return Self.portalURL(for: service)
+    }
+
+    /// "Apple Business Manager" or "Apple School Manager", for the link's name.
+    var portalName: String {
+        connections.activeConnection?.service == .appleSchoolManager ? "Apple School Manager" : "Apple Business Manager"
+    }
+
+    nonisolated static func portalURL(for service: ABM.Service) -> URL {
+        switch service {
+        case .business: URL(string: "https://business.apple.com")!
+        case .school: URL(string: "https://school.apple.com")!
+        }
+    }
+
     /// A configuration for an account and its private key, or nil when it is
     /// incomplete or not an Apple service.
     nonisolated static func configuration(for record: AppleBusinessConnection, privateKey: String) -> Configuration? {
