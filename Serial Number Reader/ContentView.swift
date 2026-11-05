@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     let monitor: USBDeviceMonitor
     let jamf: JamfStore
+    let appleBusiness: AppleBusinessStore
     let actions: DeviceActionController
     let restore: RestoreController
 
@@ -68,6 +69,7 @@ struct ContentView: View {
                     DeviceDetailView(
                         device: device,
                         jamf: jamf,
+                        appleBusiness: appleBusiness,
                         actions: actions,
                         restore: restore,
                         monitor: monitor,
@@ -346,6 +348,6 @@ struct ModeBadge: View {
 
 #Preview {
     // Never the real devices or the saved connections: the preview shows demo mode.
-    ContentView(monitor: .preview, jamf: .preview, actions: .preview, restore: .preview)
+    ContentView(monitor: .preview, jamf: .preview, appleBusiness: .preview, actions: .preview, restore: .preview)
         .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }
