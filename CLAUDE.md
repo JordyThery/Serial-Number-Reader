@@ -74,6 +74,10 @@ Build facts: not sandboxed (`ENABLE_APP_SANDBOX = NO`, needed for IOKit and the 
 
 What this app waits for from Apple, Jamf or Microsoft, or must recheck: see WATCHLIST.md.
 
+## Roadmap
+
+Ideas for later, not planned yet: see ROADMAP.md. Don't start on an item without Jordy's go-ahead.
+
 ## Testing
 
 - Unit tests: Swift Testing in `Serial Number Reader Tests`, ⌘U in the app's project. They cover the descriptor parser, UDIDs and ECIDs, cfgutil output, IPSW checks, connection conversion, Jamf networking (on JTKit's `MockServer`), session export, the action log entries and the acknowledgement.
