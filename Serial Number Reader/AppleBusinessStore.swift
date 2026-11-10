@@ -333,7 +333,7 @@ final class AppleBusinessStore {
     func testConnection(_ record: AppleBusinessConnection, typedSecret: String?) async throws -> String {
         let key = try typedSecret ?? connections.readSecret(for: record) ?? ""
         guard let configuration = Self.configuration(for: record, privateKey: key) else {
-            throw JamfSetupError(message: "Fill in the client ID, key ID and private key first.")
+            throw ConnectionTestError("Fill in the client ID, key ID and private key first.")
         }
         let client = try Self.makeClient(configuration, session: session, log: activityLog)
         let count = try await client.testConnection()
@@ -342,3 +342,8 @@ final class AppleBusinessStore {
     }
 }
 
+/// Why Test Connection couldn't start: the editor's values are incomplete.
+nonisolated struct ConnectionTestError: LocalizedError, Equatable {
+    let errorDescription: String?
+    init(_ message: String) { errorDescription = message }
+}

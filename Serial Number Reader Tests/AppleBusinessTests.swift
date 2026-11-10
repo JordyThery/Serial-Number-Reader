@@ -469,7 +469,7 @@ struct AppleBusinessTests {
         let message = try await rig.store.testConnection(record, typedSecret: rig.pem)
         #expect(message == "Connected · Apple Business · 2 device management services")
         #expect(rig.signIns.count == 1)
-        await #expect(throws: JamfSetupError(message: "Fill in the client ID, key ID and private key first.")) {
+        await #expect(throws: ConnectionTestError("Fill in the client ID, key ID and private key first.")) {
             try await rig.store.testConnection(record, typedSecret: "")
         }
     }
