@@ -149,7 +149,9 @@ final class DemoSmokeUITests: JTKitUITestCase {
     func test6ActivityLog() {
         selectPretendIPhone()
         waitForRecord()
-        checkActivityLog()
+        // The demo Apple Business organization answers inside the app under
+        // Apple's own hosts, as JTKit's demo Intune does under Microsoft's.
+        checkActivityLog(alsoAllowedHosts: ["account.apple.com", "api-business.apple.com"])
     }
 
     func test7DemoTitles() {
