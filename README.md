@@ -69,6 +69,8 @@ Settings from versions before saved connections are converted once, automaticall
 
 ### Apple Business and Apple School Manager
 
+![The pretend iPhone’s Apple Business section in Demo Mode](docs/screenshot-apple.png)
+
 This is optional; without an Apple account the app never contacts Apple Business or Apple School Manager and shows no section for it.
 
 **Create the API account.**
