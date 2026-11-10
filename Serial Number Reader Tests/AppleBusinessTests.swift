@@ -105,14 +105,76 @@ struct AppleBusinessTests {
     func incompleteAccount() {
         let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
                                              clientID: Self.clientID, keyID: "")
-        #expect(AppleBusinessStore.configuration(for: record, privateKey: "pem") == nil)
+        #expect(AppleBusinessStore.configuration(for: record, hasPrivateKey: true) == nil)
         var complete = record
         complete.keyID = Self.keyID
-        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "  ") == nil)
-        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "pem") != nil)
+        #expect(AppleBusinessStore.configuration(for: complete, hasPrivateKey: false) == nil)
+        #expect(AppleBusinessStore.configuration(for: complete, hasPrivateKey: true) != nil)
         // A Jamf service is never an Apple account.
         complete.service = .jamfPro
-        #expect(AppleBusinessStore.configuration(for: complete, privateKey: "pem") == nil)
+        #expect(AppleBusinessStore.configuration(for: complete, hasPrivateKey: true) == nil)
+    }
+
+    @Test("The private key is read only when signing in: not at launch, not for later lookups, never kept")
+    func keyReadOnlyAtSignIn() async throws {
+        let rig = try makeRig { request in
+            request.path.hasPrefix("/v1/orgDevices/OTHER") ? .json(404, #"{"errors": []}"#) : nil
+        }
+        // Saving the account wrote the key; from here on, only reads count.
+        let secrets = CountingSecretStore(base: rig.secrets)
+        let connections = AppConnectionStore(defaults: rig.settings.defaults, secrets: secrets)
+        let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: rig.server.session)
+        #expect(store.isConfigured)
+        #expect(secrets.reads == 0)
+        #expect(secrets.presenceChecks > 0)
+        _ = await finished(store)
+        #expect(secrets.reads == 1)
+        // The token is still valid: no sign-in, no read.
+        _ = await finished(store, "OTHER00001")
+        #expect(secrets.reads == 1)
+        #expect(rig.signIns.count == 1)
+    }
+
+    @Test("A Keychain that can't be read shows the problem, writes nothing, and Retry asks it again")
+    func unreadableKeychain() async throws {
+        let rig = try makeRig()
+        let secrets = CountingSecretStore(base: rig.secrets)
+        secrets.refuses = true
+        let connections = AppConnectionStore(defaults: rig.settings.defaults, secrets: secrets)
+        let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: rig.server.session)
+        let list = rig.settings.defaults.data(forKey: AppConnectionStore.appleListKey)
+        guard case .failed = store.state(forSerial: Self.serial) else {
+            Issue.record("Expected the Keychain problem, got \(store.state(forSerial: Self.serial))")
+            return
+        }
+        store.lookupIfNeeded(serial: Self.serial)
+        #expect(rig.server.requests.isEmpty)
+        #expect(secrets.writes == 0)
+        #expect(rig.settings.defaults.data(forKey: AppConnectionStore.appleListKey) == list)
+
+        secrets.refuses = false
+        store.refresh(serial: Self.serial)
+        for _ in 0..<500 where store.state(forSerial: Self.serial) == .loading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .found = store.state(forSerial: Self.serial) else {
+            Issue.record("Retry didn't read the Keychain again: \(store.state(forSerial: Self.serial))")
+            return
+        }
+    }
+
+    @Test("A private key replaced in Settings is used at the next lookup")
+    func replacedKeySignsInAgain() async throws {
+        let rig = try makeRig()
+        _ = await finished(rig.store)
+        #expect(rig.signIns.count == 1)
+        let record = try #require(rig.store.connections.activeAppleConnection)
+        try rig.store.connections.connections.save(.apple(record), secrets: [.main: P256.Signing.PrivateKey().pemRepresentation])
+        for _ in 0..<100 where rig.store.lookupStates[Self.serial] != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        _ = await finished(rig.store)
+        #expect(rig.signIns.count == 2)
     }
 
     @Test("No serial number yet: nothing to look up")
@@ -475,7 +537,8 @@ struct AppleBusinessTests {
         #expect(next.appleConnections == [apple])
         #expect(next.activeConnection == jamf)
         #expect(next.activeAppleConnection == apple)
-        #expect(try next.readSecret(for: apple) == "PEM-PLACEHOLDER")
+        #expect(try next.hasSecret(for: apple))
+        #expect(try next.secretReader(for: apple.connection)() == "PEM-PLACEHOLDER")
 
         // Deleting the account removes its list entry and key only.
         try next.connections.delete(id: apple.id)
@@ -564,4 +627,48 @@ private final class LockedCounter: @unchecked Sendable {
     private var count = 0
     func next() -> Int { lock.withLock { count += 1; return count } }
     var value: Int { lock.withLock { count } }
+}
+
+/// Counts reads of a secret apart from presence checks, and can refuse like
+/// a locked Keychain.
+private final class CountingSecretStore: SecretStore, @unchecked Sendable {
+    private let base: any SecretStore
+    private let lock = NSLock()
+    private var counts = (reads: 0, presence: 0, writes: 0)
+    private var refusing = false
+
+    init(base: any SecretStore) { self.base = base }
+
+    var reads: Int { lock.withLock { counts.reads } }
+    var presenceChecks: Int { lock.withLock { counts.presence } }
+    var writes: Int { lock.withLock { counts.writes } }
+    var refuses: Bool {
+        get { lock.withLock { refusing } }
+        set { lock.withLock { refusing = newValue } }
+    }
+
+    func secret(for account: String) -> String? { try? readSecret(for: account) }
+
+    func readSecret(for account: String) throws -> String? {
+        if refuses { throw SecretStoreError(status: errSecInteractionNotAllowed) }
+        lock.withLock { counts.reads += 1 }
+        return try base.readSecret(for: account)
+    }
+
+    func hasSecret(for account: String) throws -> Bool {
+        if refuses { throw SecretStoreError(status: errSecInteractionNotAllowed) }
+        lock.withLock { counts.presence += 1 }
+        return try base.hasSecret(for: account)
+    }
+
+    @discardableResult
+    func setSecret(_ secret: String?, for account: String) -> Bool {
+        lock.withLock { counts.writes += 1 }
+        return base.setSecret(secret, for: account)
+    }
+
+    func writeSecret(_ secret: String?, for account: String) throws {
+        lock.withLock { counts.writes += 1 }
+        try base.writeSecret(secret, for: account)
+    }
 }

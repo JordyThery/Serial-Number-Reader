@@ -46,7 +46,8 @@ final class AppleBusinessStore {
     /// JTKit's activity log (Window › Activity Log), filled by every request.
     let activityLog: ActivityLog
 
-    /// The active account with its private key; nil when it is incomplete.
+    /// The active account, complete with a stored private key; nil when it
+    /// is incomplete. The key itself is read only when the client signs in.
     private(set) var configuration: Configuration?
     /// Why the account in use can't be used although it is filled in (the
     /// Keychain can't be read).
@@ -56,10 +57,11 @@ final class AppleBusinessStore {
     /// Bumped whenever the account changes; the UI looks up again.
     private(set) var configurationGeneration = 0
 
-    /// A saved account and its private key.
+    /// A saved account whose private key is stored. Holds no key: the
+    /// client reads it from the Keychain at each sign-in (JTKit's token
+    /// provider keeps neither the key nor the signed request).
     struct Configuration: Equatable, Sendable {
         let connection: Connection
-        let privateKey: String
     }
 
     /// Demo mode's organizations; nil without demo mode.
@@ -144,28 +146,33 @@ final class AppleBusinessStore {
         }
     }
 
-    /// A configuration for an account and its private key, or nil when it is
-    /// incomplete or not an Apple service.
-    nonisolated static func configuration(for record: AppleBusinessConnection, privateKey: String) -> Configuration? {
+    /// A configuration for an account, or nil when it is incomplete (no
+    /// client ID, key ID or private key) or not an Apple service.
+    nonisolated static func configuration(for record: AppleBusinessConnection, hasPrivateKey: Bool) -> Configuration? {
         guard ABM.Service(record.service) != nil,
               !record.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !record.keyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !privateKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return Configuration(connection: record.connection, privateKey: privateKey)
+              hasPrivateKey else { return nil }
+        return Configuration(connection: record.connection)
     }
 
+    /// Asks the Keychain only whether the key is there, never for the key.
     private func activeSetup() -> (Configuration?, problem: String?) {
         guard let record = connections.activeAppleConnection else { return (nil, nil) }
         do {
-            return (Self.configuration(for: record, privateKey: try connections.readSecret(for: record) ?? ""), nil)
+            return (Self.configuration(for: record, hasPrivateKey: try connections.hasSecret(for: record)), nil)
         } catch {
             return (nil, error.localizedDescription)
         }
     }
 
+    /// The secret writes the client was made after.
+    @ObservationIgnored private var secretWritesSeen = 0
+
     private func observeConnections() {
         withObservationTracking {
             _ = connections.activeAppleConnection
+            _ = connections.secretWrites.count
             _ = demoConnection
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
@@ -178,10 +185,14 @@ final class AppleBusinessStore {
     private func connectionsChanged() {
         let (updated, problem) = activeSetup()
         let demoID = demoConnection?.id
-        guard updated != configuration || problem != connectionProblem || demoID != demoConnectionID else { return }
+        // A replaced private key: the client's token was signed with the old one.
+        let writes = connections.secretWrites.count
+        guard updated != configuration || problem != connectionProblem || demoID != demoConnectionID
+                || writes != secretWritesSeen else { return }
         configuration = updated
         connectionProblem = problem
         demoConnectionID = demoID
+        secretWritesSeen = writes
         client = nil
         clientKey = nil
         serverNames = nil
@@ -210,17 +221,19 @@ final class AppleBusinessStore {
         guard let configuration else { return nil }
         let key = "\(configuration.connection.id) \(configuration.connection.name)"
         if let client, clientKey == key { return client }
-        let newClient = try Self.makeClient(configuration, session: session, log: activityLog)
+        let newClient = try Self.makeClient(configuration.connection,
+                                            privateKey: connections.secretReader(for: configuration.connection),
+                                            session: session, log: activityLog)
         client = newClient
         clientKey = key
         serverNames = nil
         return newClient
     }
 
-    nonisolated static func makeClient(_ configuration: Configuration, session: URLSession,
-                                       log: ActivityLog?) throws -> ABM.Client {
-        let key = configuration.privateKey
-        return try ABM.Client(connection: configuration.connection, privateKey: { key }, session: session, log: log)
+    /// - Parameter privateKey: read at each sign-in, never before.
+    nonisolated static func makeClient(_ connection: Connection, privateKey: @escaping @Sendable () throws -> String,
+                                       session: URLSession, log: ActivityLog?) throws -> ABM.Client {
+        try ABM.Client(connection: connection, privateKey: privateKey, session: session, log: log)
     }
 
     // MARK: - Lookups
@@ -251,8 +264,10 @@ final class AppleBusinessStore {
         performLookup(serial)
     }
 
-    /// Looks up again, discarding any cached result.
+    /// Looks up again, discarding any cached result. A Keychain that
+    /// couldn't be read is asked again.
     func refresh(serial: String?) {
+        if connectionProblem != nil { (configuration, connectionProblem) = activeSetup() }
         guard let serial = Self.normalized(serial), isConfigured else { return }
         lookupStates[serial] = nil
         performLookup(serial)
@@ -331,11 +346,14 @@ final class AppleBusinessStore {
     /// A private key typed or imported in the editor is used instead of the
     /// stored one. Always the real account and the real network.
     func testConnection(_ record: AppleBusinessConnection, typedSecret: String?) async throws -> String {
-        let key = try typedSecret ?? connections.readSecret(for: record) ?? ""
-        guard let configuration = Self.configuration(for: record, privateKey: key) else {
+        let typedKey = typedSecret.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        let hasKey = try typedKey != nil || connections.hasSecret(for: record)
+        guard let configuration = Self.configuration(for: record, hasPrivateKey: hasKey) else {
             throw ConnectionTestError("Fill in the client ID, key ID and private key first.")
         }
-        let client = try Self.makeClient(configuration, session: session, log: activityLog)
+        let privateKey: @Sendable () throws -> String = typedKey.map { key in { key } }
+            ?? connections.secretReader(for: configuration.connection)
+        let client = try Self.makeClient(configuration.connection, privateKey: privateKey, session: session, log: activityLog)
         let count = try await client.testConnection()
         let product = ABM.Service(record.service)?.label ?? record.service.displayName
         return "Connected · \(product) · \(count) device management service\(count == 1 ? "" : "s")"

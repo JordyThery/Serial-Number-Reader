@@ -119,6 +119,9 @@ final class AppConnectionStorage: ConnectionStorage {
 nonisolated struct AppConnectionSecrets: SecretStore {
     let jamf: any SecretStore
     let apple: any SecretStore
+    /// Told the account after every write or delete (e.g. a private key
+    /// replaced in Settings), so the client using it starts again.
+    var didWrite: (@Sendable (String) -> Void)?
 
     private static let applePrefix = "apple/"
 
@@ -141,16 +144,18 @@ nonisolated struct AppConnectionSecrets: SecretStore {
 
     @discardableResult
     func setSecret(_ secret: String?, for account: String) -> Bool {
-        let (store, account) = route(account)
-        return store.setSecret(secret, for: account)
+        defer { didWrite?(account) }
+        let (store, routed) = route(account)
+        return store.setSecret(secret, for: routed)
     }
 
     // Forwarded rather than left to the protocol's defaults, so the Keychain
     // answers presence without reading the secret, and a failure keeps its
     // error code instead of reading as "no secret".
     func writeSecret(_ secret: String?, for account: String) throws {
-        let (store, account) = route(account)
-        try store.writeSecret(secret, for: account)
+        defer { didWrite?(account) }
+        let (store, routed) = route(account)
+        try store.writeSecret(secret, for: routed)
     }
 
     func hasSecret(for account: String) throws -> Bool {
@@ -188,6 +193,13 @@ final class AppConnectionStore {
     static let appleActiveKey = "activeAppleBusinessConnectionID"
 
     let connections: ConnectionStore<AppConnection>
+    /// Where each connection's secret is, the same as `connections` uses,
+    /// readable off the main actor: a private key is read only when the
+    /// client signs in (`secretReader(for:)`).
+    nonisolated let secretLocation: SecretLocation
+    /// Counts the writes and deletes of secrets, so a store whose client
+    /// holds a token starts again when its secret was replaced.
+    let secretWrites: SecretWriteCounter
     @ObservationIgnored private let defaults: UserDefaults
     /// Whether this is the real list: the app's settings and Keychain items.
     /// Under tests its requests are refused (`TestRun.refusingSession`).
@@ -249,13 +261,25 @@ final class AppConnectionStore {
             conversionProblem = nil
         }
 
+        let writes = SecretWriteCounter()
+        secretWrites = writes
+        let routed = AppConnectionSecrets(jamf: secrets, apple: appleSecrets, didWrite: { _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { writes.count += 1 }
+            } else {
+                Task { @MainActor in writes.count += 1 }
+            }
+        })
+        let location = SecretLocation(store: routed, account: AppConnectionSecrets.account(for:))
         connections = ConnectionStore(
             storage: AppConnectionStorage(defaults: defaults),
-            secrets: [.main: SecretLocation(store: AppConnectionSecrets(jamf: secrets, apple: appleSecrets),
-                                            account: AppConnectionSecrets.account(for:))],
+            secrets: [.main: location],
             log: log,
             liveRecord: AppConnection.live
         )
+        // The same choice JTKit's store makes: under the live-check switch
+        // the run's own secrets, by connection ID.
+        secretLocation = LiveLaunch.isSwitched ? SecretLocation(store: LiveLaunch.secrets(for: .main)) : location
 
         let jamfIDs = connections.records.compactMap(\.jamf).map(\.id)
         let appleIDs = connections.records.compactMap(\.apple).map(\.id)
@@ -339,10 +363,24 @@ final class AppConnectionStore {
         activeAppleID.flatMap { id in appleConnections.first { $0.id == id } }
     }
 
-    /// The stored private key, or nil when there is none.
-    /// - Throws: when the Keychain can't be read (refused, locked).
-    func readSecret(for record: AppleBusinessConnection) throws -> String? {
-        try connections.readSecret(for: record.connection)
+    /// Whether a private key is stored, asking the Keychain for the item's
+    /// attributes only, never the key.
+    /// - Throws: when the Keychain can't tell (refused, locked).
+    func hasSecret(for record: AppleBusinessConnection) throws -> Bool {
+        try connections.hasSecret(for: record.connection)
+    }
+
+    /// Reads a connection's secret from the Keychain each time it is
+    /// called, for a client's sign-in; nothing is kept in between.
+    /// - Throws: `MissingSecretError` when none is stored, or the Keychain's error.
+    nonisolated func secretReader(for connection: Connection) -> @Sendable () throws -> String {
+        let location = secretLocation
+        return {
+            guard let secret = try location.store.readSecret(for: location.account(connection)), !secret.isEmpty else {
+                throw MissingSecretError(connection: connection.name, secretName: connection.signIn.secretName ?? "secret")
+            }
+            return secret
+        }
     }
 
     // MARK: Settings
@@ -366,4 +404,10 @@ final class AppConnectionStore {
         if activeConnection == nil { activeID = jamfConnections.first?.id }
         if activeAppleConnection == nil { activeAppleID = appleConnections.first?.id }
     }
+}
+
+/// How many times a secret was written or deleted since launch.
+@Observable
+final class SecretWriteCounter {
+    var count = 0
 }
