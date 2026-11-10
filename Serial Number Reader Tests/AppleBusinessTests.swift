@@ -368,6 +368,20 @@ struct AppleBusinessTests {
         #expect(message.contains("429"))
     }
 
+    // MARK: Demo mode
+
+    @Test("In demo mode the pretend iPhone is found in the demo organization, and no saved account is used")
+    func demoFindsPretendIPhone() async throws {
+        let store = AppleBusinessStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode)
+        #expect(store.isDemo && store.isConfigured)
+        #expect(store.productName == "Apple Business")
+        guard case .found(let record) = await finished(store, PretendIPhone.serial) else {
+            Issue.record("The pretend iPhone isn't in the demo organization: \(store.state(forSerial: PretendIPhone.serial))")
+            return
+        }
+        #expect(record.device.serialNumber == PretendIPhone.serial)
+    }
+
     // MARK: Network
 
     @Test("Toward Apple only the sign-in is a POST; every other request is a GET, to Apple's own hosts only")

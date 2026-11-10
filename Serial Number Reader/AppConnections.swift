@@ -351,7 +351,7 @@ final class AppConnectionStore {
     /// kind becomes the one in use.
     func newConnection(service: ConnectionService) -> AppConnection {
         if AppConnection.appleServices.contains(service) {
-            let record = AppleBusinessConnection(name: service.displayName, service: service, signIn: service.signInMethods[0])
+            let record = AppleBusinessConnection(name: "New Account", service: service, signIn: service.signInMethods[0])
             if activeAppleConnection == nil { activeAppleID = record.id }
             return .apple(record)
         }
