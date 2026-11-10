@@ -65,7 +65,7 @@ struct SettingsView: View {
     /// Where to create the API account and what it needs.
     static func help(for record: AppleBusinessConnection) -> String {
         let product = record.service == .appleSchoolManager ? "Apple School Manager" : "Apple Business"
-        return "Optional: looks each device’s serial number up in \(product). In \(product), create an API account for this app alone, with read access only (your name at the bottom of the sidebar → Preferences → API), and download its private key (.pem), which is shown only once. Enter the account’s client ID and key ID, then paste the private key or import the .pem file. The private key is stored in the Keychain. Without an Apple account the app never contacts \(product)."
+        return "Optional: looks each device’s serial number up in \(product). The app only reads. Create an API account for this app alone, so you can revoke it on its own. In \(product), create it under your name at the bottom of the sidebar → Preferences → API, and download its private key (.pem), which is shown only once. Enter the account’s client ID and key ID, then paste the private key or import the .pem file. The private key is stored in the Keychain. Without an Apple account the app never contacts \(product)."
     }
 
     /// Where to create the credentials and which permissions they need.

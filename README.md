@@ -74,7 +74,7 @@ This is optional; without an Apple account the app never contacts Apple Business
 **Create the API account.**
 
 1. Sign in to [Apple Business](https://business.apple.com) or [Apple School Manager](https://school.apple.com) and open the **API** section of the preferences (your name at the bottom of the sidebar → Preferences → API).
-2. Create an API account for this app alone, with read access only. The app only reads; it never changes anything in your organization.
+2. The app only reads. Create an API account for this app alone, so you can revoke it on its own.
 3. Download the **private key** (a `.pem` file) when it is shown — Apple shows it only once — and note the **Client ID** and **Key ID**.
 
 **Configure the app.** Open **Settings › Connections**, add a connection with **+** and choose **Apple Business** or **Apple School Manager**. Enter the Client ID and Key ID, paste the private key or import the `.pem` file, then click **Test Connection**. The first Apple account you save is the one in use; with several, choose it with the toolbar picker, the **Connection** menu or **Use This Account**. Select a device in the sidebar: its Apple section appears below the Jamf section once the serial number is known. The app signs in with OAuth 2.0 client credentials and a short-lived ES256 client assertion, and keeps the access token until shortly before it expires. Apple allows about 20 requests a minute per organization; the app stays under that and waits when asked to.

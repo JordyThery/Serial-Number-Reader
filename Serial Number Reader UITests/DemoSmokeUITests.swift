@@ -438,7 +438,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
         // The role: marked as the Apple account in use, not offered for Jamf.
         XCTAssertTrue(settings.staticTexts["Apple"].waitForExistence(timeout: 5), "The Apple role isn't shown")
         XCTAssertFalse(settings.buttons["Use This Connection"].exists, "An Apple account is offered as the Jamf connection")
-        XCTAssertTrue(anyContaining("read access only").exists, "No help text for the API account")
+        XCTAssertTrue(anyContaining("so you can revoke it on its own").exists, "No help text for the API account")
 
         row.click()
         tap(settings.buttons["Delete Connection"])
