@@ -192,11 +192,11 @@ struct RegressionFixTests {
     private func jamfStore(server: MockServer, serverURL: String, service: ConnectionService = .jamfPro,
                            log: ActivityLog? = nil) throws -> (JamfStore, TemporaryDefaults) {
         let settings = TemporaryDefaults("regression")
-        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         let record = service == .jamfSchool
             ? JamfConnection(name: "School", service: .jamfSchool, signIn: .schoolAPIKey, serverURL: serverURL, clientID: "1234")
             : JamfConnection(name: "Pro", service: .jamfPro, signIn: .apiClient, serverURL: serverURL, clientID: "client")
-        try connections.connections.save(record, secrets: [.main: "secret"])
+        try connections.connections.save(.jamf(record), secrets: [.main: "secret"])
         connections.activeID = record.id
         return (JamfStore(connections: connections, activityLog: log ?? ActivityLog(), session: server.session), settings)
     }
@@ -244,7 +244,7 @@ struct RegressionFixTests {
         // What Settings › Connections saves when only the address changed: the
         // record, no secret (JTKit keeps the stored one for the same server).
         record.serverURL = "https://pro.example.com"
-        try store.connections.connections.save(record)
+        try store.connections.connections.save(.jamf(record))
         await until { store.connectionProblem == nil }
 
         #expect((try store.connections.readSecret(for: record)) == "secret")

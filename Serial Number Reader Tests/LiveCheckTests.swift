@@ -65,8 +65,8 @@ struct LiveTenant {
         default:
             throw LiveFailure("\(role): \(service.rawValue) isn't used by Serial Number Reader")
         }
-        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
-        try connections.connections.save(record, secrets: [.main: secret])
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        try connections.connections.save(.jamf(record), secrets: [.main: secret])
         connections.activeID = record.id
         store = JamfStore(connections: connections, activityLog: activity, session: session ?? run.network.session)
     }

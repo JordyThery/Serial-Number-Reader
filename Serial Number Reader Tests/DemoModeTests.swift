@@ -209,7 +209,7 @@ struct DemoJamfTests {
     private func store(_ mode: DemoMode, server: MockServer, log: ActivityLog? = nil)
         -> (JamfStore, TemporaryDefaults) {
         let settings = TemporaryDefaults("demo")
-        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         return (JamfStore(connections: connections, activityLog: log ?? ActivityLog(), session: server.session, demo: mode), settings)
     }
 
@@ -293,23 +293,23 @@ struct DemoJamfTests {
         let defaults = settings.defaults
         let saved = JamfConnection(name: "Real", service: .jamfPro, signIn: .apiClient,
                                    serverURL: "https://pro.example.com", clientID: "client")
-        try store.connections.connections.save(saved, secrets: [.main: "secret"])
+        try store.connections.connections.save(.jamf(saved), secrets: [.main: "secret"])
         store.connections.activeID = saved.id
-        let list = defaults.data(forKey: JamfConnectionStore.listKey)
-        let active = defaults.string(forKey: JamfConnectionStore.activeKey)
+        let list = defaults.data(forKey: AppConnectionStore.listKey)
+        let active = defaults.string(forKey: AppConnectionStore.activeKey)
 
         mode.isOn = true
         await until { store.demoConnection != nil }
         #expect(store.demoConnection == .demoJamfPro && store.webBaseURL == nil)
         #expect(store.connectionRole(selection: .constant(saved.id)).usesDemo)
         #expect(store.connections.activeConnection == saved)
-        #expect(throws: ConnectionStoreError.self) { try store.connections.connections.save(JamfConnection(
-            name: "Contoso", service: .jamfPro, signIn: .apiClient, serverURL: "https://\(DemoWorld.jamfProHost)", clientID: "c")) }
+        #expect(throws: ConnectionStoreError.self) { try store.connections.connections.save(.jamf(JamfConnection(
+            name: "Contoso", service: .jamfPro, signIn: .apiClient, serverURL: "https://\(DemoWorld.jamfProHost)", clientID: "c"))) }
 
         mode.isOn = false
         await until { store.demoConnection == nil }
         #expect(store.demoConnection == nil && store.connections.activeConnection == saved)
-        #expect(defaults.data(forKey: JamfConnectionStore.listKey) == list)
-        #expect(defaults.string(forKey: JamfConnectionStore.activeKey) == active)
+        #expect(defaults.data(forKey: AppConnectionStore.listKey) == list)
+        #expect(defaults.string(forKey: AppConnectionStore.activeKey) == active)
     }
 }

@@ -9,6 +9,9 @@ enum PreviewSupport {
     /// Demo mode switched on for this preview only; saved nowhere.
     static let mode = DemoMode(key: "demoMode", arguments: ["app", DemoMode.launchArgument, "YES"])
     static let usb = DemoUSB(mode: mode)
+    /// A throwaway, empty list of connections without Keychain, shared by
+    /// the preview's Jamf and Apple stores, as in the app.
+    static let connections = AppConnectionStore.forUnitTestHost()
 }
 
 /// USB hardware that refuses every call and reaches nothing: previews.
@@ -39,7 +42,12 @@ extension USBDeviceMonitor {
 
 extension JamfStore {
     /// A throwaway, empty list of connections without Keychain; demo mode's connections.
-    static var preview: JamfStore { JamfStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode) }
+    static var preview: JamfStore { JamfStore(connections: PreviewSupport.connections, demo: PreviewSupport.mode) }
+}
+
+extension AppleBusinessStore {
+    /// A throwaway, empty list of connections without Keychain; demo mode's organization.
+    static var preview: AppleBusinessStore { AppleBusinessStore(connections: PreviewSupport.connections, demo: PreviewSupport.mode) }
 }
 
 extension DeviceActionController {

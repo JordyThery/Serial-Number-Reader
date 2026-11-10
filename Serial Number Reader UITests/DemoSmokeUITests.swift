@@ -129,7 +129,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
         waitForRecord()
         // The record comes from the connection in use, Contoso's Jamf Pro.
         let connection = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "title BEGINSWITH 'Connection: Contoso Jamf Pro'")).firstMatch
+            .matching(NSPredicate(format: "title BEGINSWITH 'Jamf: Contoso Jamf Pro'")).firstMatch
         XCTAssertTrue(connection.waitForExistence(timeout: 10), "The lookup didn't use Contoso Jamf Pro (Demo)")
         // The sidebar row names the record the lookup found ("Jamf: <device name>").
         XCTAssertTrue(anyContaining("Jamf: ").waitForExistence(timeout: 10), "The sidebar doesn't show the record found")
@@ -149,7 +149,9 @@ final class DemoSmokeUITests: JTKitUITestCase {
     func test6ActivityLog() {
         selectPretendIPhone()
         waitForRecord()
-        checkActivityLog()
+        // The demo Apple Business organization answers inside the app under
+        // Apple's own hosts, as JTKit's demo Intune does under Microsoft's.
+        checkActivityLog(alsoAllowedHosts: ["account.apple.com", "api-business.apple.com"])
     }
 
     func test7DemoTitles() {
@@ -396,6 +398,53 @@ final class DemoSmokeUITests: JTKitUITestCase {
         tap(menu)
         XCTAssertTrue(menu.menuItems["Remove from List"].isEnabled, "Remove from List stayed off after the edit")
         app.typeKey(.escape, modifierFlags: [])
+    }
+
+    /// The pretend iPhone is found in the demo Apple Business organization:
+    /// its Apple section shows the record, and the Connection menu has the
+    /// Apple role with the demo organization.
+    func test23AppleBusinessSection() {
+        selectPretendIPhone()
+        XCTAssertTrue(any("Apple Business").waitForExistence(timeout: 20), "No Apple Business section")
+        XCTAssertTrue(any("Device Management Service").waitForExistence(timeout: 20), "The Apple Business lookup found no record")
+        XCTAssertFalse(anyContaining("Open in Apple Business").exists, "The demo organization has no web pages to open")
+        let organization = connectionMenuItem("Contoso (Demo)")
+        XCTAssertTrue(organization.waitForExistence(timeout: 5), "The Connection menu doesn't offer the demo Apple organization")
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    /// Settings › Connections lists an Apple account in the same list as the
+    /// Jamf connections; the first one saved is the Apple account in use.
+    func test24AppleRoleInSettings() {
+        let settings = openSettings()
+        tap(settings.toolbars.buttons["Connections"])
+        let add = settings.buttons["Add Connection"].exists ? settings.buttons["Add Connection"] : settings.menuButtons["Add Connection"]
+        tap(add, timeout: 10)
+        XCTAssertTrue(app.menuItems["Apple School Manager"].waitForExistence(timeout: 5), "+ doesn't offer Apple School Manager")
+        tap(app.menuItems["Apple Business"])
+        // The name field by its label, or (unlabeled) by the new account's name.
+        let labelled = settings.textFields["Name"].firstMatch
+        let nameField = labelled.waitForExistence(timeout: 2)
+            ? labelled
+            : settings.textFields.matching(NSPredicate(format: "value BEGINSWITH 'New '")).firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5), "The new account's editor didn't open")
+        let name = "JTKTEST Apple \(Int.random(in: 1000...9999))"
+        nameField.click()
+        nameField.typeKey("a", modifierFlags: .command)
+        nameField.typeText(name)
+        tap(settings.buttons["Save"])
+        let row = settings.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ OR value BEGINSWITH %@", name, name)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "The Apple account isn't listed")
+        // The role: marked as the Apple account in use, not offered for Jamf.
+        XCTAssertTrue(settings.staticTexts["Apple"].waitForExistence(timeout: 5), "The Apple role isn't shown")
+        XCTAssertFalse(settings.buttons["Use This Connection"].exists, "An Apple account is offered as the Jamf connection")
+        XCTAssertTrue(anyContaining("so you can revoke it on its own").exists, "No help text for the API account")
+
+        row.click()
+        tap(settings.buttons["Delete Connection"])
+        tap(dialogButton("Delete"))
+        XCTAssertTrue(row.waitForNonExistence(timeout: 10), "The Apple account wasn't deleted")
+        close(settings)
     }
 
     /// Turning Demo Mode off takes the pretend iPhone and the sidebar note away.

@@ -44,10 +44,10 @@ nonisolated final class AssetTagServer: @unchecked Sendable {
 struct SaveRestoreAndSettingsTests {
     /// A store with one saved Jamf School connection (in memory) on `server`.
     private func store(_ server: MockServer, settings: TemporaryDefaults) throws -> JamfStore {
-        let connections = JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         let record = JamfConnection(name: "School", service: .jamfSchool, signIn: .schoolAPIKey,
                                     serverURL: "school.example.com", clientID: "84512376")
-        try connections.connections.save(record, secrets: [.main: "api-key"])
+        try connections.connections.save(.jamf(record), secrets: [.main: "api-key"])
         connections.activeID = record.id
         return JamfStore(connections: connections, activityLog: ActivityLog(), session: server.session)
     }
@@ -92,7 +92,7 @@ struct SaveRestoreAndSettingsTests {
         // Switch to another connection while the save waits on the server.
         let other = JamfConnection(name: "Other", service: .jamfSchool, signIn: .schoolAPIKey,
                                    serverURL: "other.example.com", clientID: "11111111")
-        try store.connections.connections.save(other, secrets: [.main: "other-key"])
+        try store.connections.connections.save(.jamf(other), secrets: [.main: "other-key"])
         let generation = store.configurationGeneration
         store.connections.activeID = other.id
         await until { store.configurationGeneration != generation }
@@ -139,7 +139,7 @@ struct SaveRestoreAndSettingsTests {
         let settings = TemporaryDefaults("saves")
         defer { settings.remove() }
         settings.defaults.set(true, forKey: "demoMode")
-        let emptied = JamfConnectionStore.emptiedDefaults(domain: settings.domain)
+        let emptied = AppConnectionStore.emptiedDefaults(domain: settings.domain)
         #expect(emptied.object(forKey: "demoMode") == nil)
         #expect(!DemoMode(key: "demoMode", defaults: emptied).isOn)
         // And the app's own switch, made from the emptied host settings, is off.

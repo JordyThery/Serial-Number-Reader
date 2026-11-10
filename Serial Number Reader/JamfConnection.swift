@@ -1,14 +1,12 @@
 import Foundation
 import JTKit
-import Observation
-import os
 
 /// A saved Jamf connection: Jamf Pro (API client or username and password),
 /// the Jamf Platform API, or Jamf School.
 ///
 /// The list is saved as JSON under the UserDefaults key `jamfConnections` with
 /// these field names; keep them, or saved connections are lost. The secret is
-/// not part of it: it is in the Keychain (see `JamfConnectionStore.keychain`).
+/// not part of it: it is in the Keychain (see `AppConnectionStore.jamfKeychain`).
 nonisolated struct JamfConnection: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var name: String
@@ -54,132 +52,5 @@ nonisolated extension JamfConnection: ConnectionRecord {
             clientID = newValue.clientID
             username = newValue.username
         }
-    }
-}
-
-/// The saved Jamf connections and the one in use. JTKit's `ConnectionStore`
-/// keeps the list under the UserDefaults key `jamfConnections` and each
-/// connection's secret in the login Keychain (service
-/// `be.jordythery.SerialNumberReader.jamf`, account = connection UUID). The
-/// connection in use is saved under `activeJamfConnectionID`.
-///
-/// On first launch the single settings of earlier versions become connections
-/// (`LegacySettingsConversion`); those settings are only read, never changed.
-@Observable
-final class JamfConnectionStore {
-    static let listKey = "jamfConnections"
-    static let activeKey = "activeJamfConnectionID"
-
-    let connections: ConnectionStore<JamfConnection>
-    @ObservationIgnored private let defaults: UserDefaults
-    /// Whether this is the real list: the app's settings and Keychain items.
-    /// Under tests its requests are refused (`TestRun.refusingSession`).
-    let holdsSavedConnections: Bool
-
-    var activeID: UUID? {
-        didSet { defaults.set(activeID?.uuidString, forKey: Self.activeKey) }
-    }
-
-    /// Why the settings of an earlier version weren't converted at this
-    /// launch (e.g. the Keychain refused to read an old secret), for Settings
-    /// › Connections; nil when there was nothing to convert or it worked.
-    let conversionProblem: String?
-
-    /// - Parameters:
-    ///   - defaults: where the list, the connection in use and the old settings are.
-    ///   - secrets: where secrets are kept, old and new; the app's Keychain items by default.
-    init(defaults: UserDefaults = .standard, secrets: any SecretStore = JamfConnectionStore.keychain) {
-        self.defaults = defaults
-        // Under the live-check switch JTKit's store holds only the release
-        // check's connections, in memory: the saved ones are never reached.
-        holdsSavedConnections = !LiveLaunch.isSwitched
-            && (defaults === UserDefaults.standard || secrets is KeychainSecretStore)
-        let logger = Self.logger
-        // Can name connections, Keychain accounts and files: private in the system log.
-        let log: (String) -> Void = { logger.error("\($0, privacy: .private)") }
-        connections = ConnectionStore(
-            storage: UserDefaultsConnectionStorage(key: Self.listKey, defaults: defaults),
-            secrets: [.main: SecretLocation(store: secrets)],
-            log: log,
-            liveRecord: JamfConnection.init(live:)
-        )
-
-        // Never under the live-check switch: the old settings and their
-        // Keychain items are the real ones.
-        let conversion: LegacySettingsConversion.Outcome = LiveLaunch.isSwitched
-            ? .alreadyDone
-            : LegacySettingsConversion.run(defaults: defaults, secrets: secrets, into: connections, log: log)
-        if case .failed(let reason) = conversion {
-            conversionProblem = LegacySettingsConversion.notice(reason)
-        } else {
-            conversionProblem = nil
-        }
-        let stored = defaults.string(forKey: Self.activeKey).flatMap(UUID.init)
-        if let stored, connections.record(id: stored) != nil {
-            activeID = stored
-        } else {
-            activeID = conversion.activeID ?? connections.records.first?.id
-            // didSet doesn't run in init. Never cleared here: while the list
-            // can't be read, the saved choice must survive.
-            if let activeID, activeID != stored {
-                defaults.set(activeID.uuidString, forKey: Self.activeKey)
-            }
-        }
-    }
-
-    /// Secrets of earlier versions and of saved connections share this service.
-    nonisolated static let keychain = KeychainSecretStore(
-        service: "be.jordythery.SerialNumberReader.jamf",
-        log: { logger.error("\($0, privacy: .private)") }
-    )
-
-    private nonisolated static let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Connections")
-
-    /// The store for the app while it hosts unit tests: an empty, throwaway
-    /// settings domain and no Keychain, so running the tests never converts
-    /// or changes the real settings and Keychain items.
-    static let unitTestHostDomain = "be.jordythery.SerialNumberReader.unit-test-host"
-
-    static func forUnitTestHost() -> JamfConnectionStore {
-        JamfConnectionStore(defaults: emptiedDefaults(domain: unitTestHostDomain), secrets: NoSecrets())
-    }
-
-    /// A throwaway settings domain, emptied before anything reads it.
-    static func emptiedDefaults(domain: String) -> UserDefaults {
-        // Never the real settings instead: the unit-test host would change them.
-        guard let defaults = UserDefaults(suiteName: domain) else {
-            preconditionFailure("No settings domain \(domain).")
-        }
-        defaults.removePersistentDomain(forName: domain)
-        return defaults
-    }
-
-    private nonisolated struct NoSecrets: SecretStore {
-        func secret(for account: String) -> String? { nil }
-        func setSecret(_ secret: String?, for account: String) -> Bool { secret == nil }
-    }
-
-    var activeConnection: JamfConnection? {
-        activeID.flatMap(connections.record(id:))
-    }
-
-    /// The stored secret, or nil when there is none.
-    /// - Throws: when the Keychain can't be read (refused, locked): show
-    ///   that, not "no connection".
-    func readSecret(for record: JamfConnection) throws -> String? {
-        try connections.readSecret(for: record.connection)
-    }
-
-    /// A new connection for + in Settings › Connections. The first one becomes active.
-    func newConnection(service: ConnectionService) -> JamfConnection {
-        let record = JamfConnection(name: "New Connection", service: service, signIn: service.signInMethods[0])
-        if activeConnection == nil { activeID = record.id }
-        return record
-    }
-
-    /// After a connection was deleted in Settings: when it was the active one,
-    /// the first remaining connection becomes active.
-    func connectionWasDeleted() {
-        if activeConnection == nil { activeID = connections.records.first?.id }
     }
 }

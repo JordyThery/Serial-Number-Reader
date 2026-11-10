@@ -93,7 +93,7 @@ struct ReviewFixTests {
         settings.defaults.set("client", forKey: LegacySettingsConversion.OldKey.clientID)
         secrets.refusesReads = true
 
-        let refused = JamfConnectionStore(defaults: settings.defaults, secrets: secrets)
+        let refused = AppConnectionStore(defaults: settings.defaults, secrets: secrets)
         let notice = try #require(refused.conversionProblem)
         #expect(notice.contains("weren’t converted"))
         #expect(notice.contains("Keychain"))
@@ -101,7 +101,7 @@ struct ReviewFixTests {
         #expect(refused.connections.records.isEmpty)
 
         secrets.refusesReads = false
-        let next = JamfConnectionStore(defaults: settings.defaults, secrets: secrets)
+        let next = AppConnectionStore(defaults: settings.defaults, secrets: secrets)
         #expect(next.conversionProblem == nil)
         #expect(next.connections.records.count == 1)
     }

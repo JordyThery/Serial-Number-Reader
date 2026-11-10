@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     let monitor: USBDeviceMonitor
     let jamf: JamfStore
+    let appleBusiness: AppleBusinessStore
     let actions: DeviceActionController
     let restore: RestoreController
 
@@ -68,6 +69,7 @@ struct ContentView: View {
                     DeviceDetailView(
                         device: device,
                         jamf: jamf,
+                        appleBusiness: appleBusiness,
                         actions: actions,
                         restore: restore,
                         monitor: monitor,
@@ -89,6 +91,7 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     RestoreBanner(restore: restore)
                     RetryWaitBar(waits: jamf.waits)
+                    RetryWaitBar(waits: appleBusiness.waits)
                 }
             }
         }
@@ -111,8 +114,21 @@ struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 @Bindable var connections = jamf.connections
                 ConnectionPicker(store: connections.connections,
-                                 role: jamf.connectionRole(selection: $connections.activeID)) {
+                                 role: jamf.connectionRole(selection: $connections.activeID),
+                                 help: "The Jamf connection in use") {
                     DemoModeSwitch(actions: actions, restore: restore)
+                }
+            }
+            // Hidden until an Apple account is saved (or in demo mode): the
+            // lookup is optional, and an empty picker is unexplained chrome.
+            if !jamf.connections.appleConnections.isEmpty || appleBusiness.isDemo {
+                ToolbarItem(placement: .navigation) {
+                    @Bindable var connections = jamf.connections
+                    ConnectionPicker(store: connections.connections,
+                                     role: appleBusiness.connectionRole(selection: $connections.activeAppleID),
+                                     help: "The Apple Business or Apple School Manager account in use") {
+                        DemoModeSwitch(actions: actions, restore: restore)
+                    }
                 }
             }
         }
@@ -346,6 +362,6 @@ struct ModeBadge: View {
 
 #Preview {
     // Never the real devices or the saved connections: the preview shows demo mode.
-    ContentView(monitor: .preview, jamf: .preview, actions: .preview, restore: .preview)
+    ContentView(monitor: .preview, jamf: .preview, appleBusiness: .preview, actions: .preview, restore: .preview)
         .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }

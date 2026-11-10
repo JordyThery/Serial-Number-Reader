@@ -45,7 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
-    @State private var jamf = JamfStore(connections: AppDemo.connections(), activityLog: .app, demo: AppDemo.mode)
+    @State private var jamf = JamfStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
+    @State private var appleBusiness = AppleBusinessStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -57,7 +58,7 @@ struct SerialNumberReaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(monitor: monitor, jamf: jamf, actions: appDelegate.actions, restore: appDelegate.restore)
+            ContentView(monitor: monitor, jamf: jamf, appleBusiness: appleBusiness, actions: appDelegate.actions, restore: appDelegate.restore)
                 .environment(updates)
                 .frame(minWidth: 760, minHeight: 440)
                 .task {
@@ -69,11 +70,14 @@ struct SerialNumberReaderApp: App {
         }
         .commands {
             AppInfoCommands(appName: "Serial Number Reader") { updates.checkManually() }
-            // The toolbar picker's items, as JTKit's Connection menu.
+            // The toolbar pickers' items, as JTKit's Connection menu: Jamf,
+            // then Apple, each under its role's title.
             ConnectionCommands(
                 store: jamf.connections.connections,
                 roles: [jamf.connectionRole(selection: Binding(get: { jamf.connections.activeID },
-                                                               set: { jamf.connections.activeID = $0 }))]
+                                                               set: { jamf.connections.activeID = $0 })),
+                        appleBusiness.connectionRole(selection: Binding(get: { jamf.connections.activeAppleID },
+                                                                        set: { jamf.connections.activeAppleID = $0 }))]
             ) {
                 DemoModeSwitch(actions: appDelegate.actions, restore: appDelegate.restore)
             }
@@ -98,7 +102,7 @@ struct SerialNumberReaderApp: App {
         // JTKit's Settings window: Connections and Updates (no General tab:
         // the app has no general settings; it follows the Mac's appearance).
         SettingsWindow(updates: updates, opensTabsByName: true) {
-            SettingsView(jamf: jamf)
+            SettingsView(jamf: jamf, appleBusiness: appleBusiness)
                 // Settings › Connections notes that these are the real connections.
                 .environment(AppDemo.mode)
         }
@@ -112,9 +116,18 @@ struct SerialNumberReaderApp: App {
         )
     }
 
+    /// The Apple Business lookup of a device, as far as it already ran (never
+    /// starts one): the serial from the device, or from its Jamf record.
+    private func appleBusinessState(for device: USBDevice) -> AppleBusinessLookupState? {
+        guard appleBusiness.isConfigured else { return nil }
+        var serial = device.serialNumber
+        if serial == nil, case .found(let record) = jamf.state(for: device) { serial = record.serialNumber }
+        return appleBusiness.stateSoFar(forSerial: serial)
+    }
+
     /// The device list in connection order (oldest first), as export rows.
     private var sessionRows: [SessionExport.Row] {
-        monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0)) }
+        monitor.devices.reversed().map { SessionExport.row(for: $0, jamf: jamf.state(for: $0), appleBusiness: appleBusinessState(for: $0)) }
     }
 }
 

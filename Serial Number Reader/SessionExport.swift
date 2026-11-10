@@ -24,15 +24,20 @@ nonisolated enum SessionExport {
         var assetTag = ""
         var managed = ""
         var jamfStatus = ""
+        var appleBusinessStatus = ""
+        var appleBusinessMDMServer = ""
     }
 
     static let header = [
         "Connected", "Disconnected", "Mode", "Model", "Model Identifier", "OS Version",
         "Device Name", "Serial Number", "Serial Source", "UDID", "ECID",
         "Jamf Name", "Asset Tag", "Managed", "Jamf Status",
+        "Apple Business Status", "Apple Business Device Management Service",
     ]
 
-    static func row(for device: USBDevice, jamf: JamfLookupState) -> Row {
+    /// - Parameter appleBusiness: the device's Apple Business or Apple School Manager
+    ///   lookup so far; nil (or not configured) leaves its columns empty.
+    static func row(for device: USBDevice, jamf: JamfLookupState, appleBusiness: AppleBusinessLookupState? = nil) -> Row {
         var row = Row()
         row.connected = timestamp(device.connectedAt)
         row.disconnected = device.disconnectedAt.map(timestamp) ?? ""
@@ -68,6 +73,10 @@ nonisolated enum SessionExport {
         row.jamfName = record?.name ?? ""
         row.assetTag = record?.assetTag ?? ""
         row.managed = record?.managed.map { $0 ? "Yes" : "No" } ?? ""
+        if let appleBusiness {
+            row.appleBusinessStatus = AppleBusinessText.exportStatus(appleBusiness)
+            if case .found(let found) = appleBusiness { row.appleBusinessMDMServer = found.mdmServerName ?? "" }
+        }
         return row
     }
 
@@ -76,7 +85,8 @@ nonisolated enum SessionExport {
         let lines = [header] + rows.map { row in
             [row.connected, row.disconnected, row.mode, row.model, row.modelIdentifier,
              row.osVersion, row.deviceName, row.serialNumber, row.serialSource, row.udid,
-             row.ecid, row.jamfName, row.assetTag, row.managed, row.jamfStatus]
+             row.ecid, row.jamfName, row.assetTag, row.managed, row.jamfStatus,
+             row.appleBusinessStatus, row.appleBusinessMDMServer]
         }
         return lines.map { $0.map(escape).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
     }

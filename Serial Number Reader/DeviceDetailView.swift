@@ -3,9 +3,17 @@ import CoreImage.CIFilterBuiltins
 import JTKit
 import SwiftUI
 
+/// Runs the Apple Business lookup again when the serial number becomes known
+/// or the account changes.
+private struct AppleBusinessLookupKey: Hashable {
+    let serial: String?
+    let generation: Int
+}
+
 struct DeviceDetailView: View {
     let device: USBDevice
     let jamf: JamfStore
+    let appleBusiness: AppleBusinessStore
     /// Shared app-wide so only one action runs at a time (the VDM path
     /// targets a port, not a specific device) and errors survive selection
     /// changes.
@@ -45,10 +53,19 @@ struct DeviceDetailView: View {
             }
 
             jamfSection
+
+            if appleBusiness.isConfigured {
+                appleBusinessSection
+            }
         }
         .formStyle(.grouped)
         .navigationSubtitle(device.modelDisplayName)
         .task { monitor.refreshTrust(deviceID: device.id) }
+        // The serial number is known from the device (Recovery) or, in Normal
+        // mode, once Jamf has answered; an account change looks up again.
+        .task(id: AppleBusinessLookupKey(serial: knownSerial, generation: appleBusiness.configurationGeneration)) {
+            appleBusiness.lookupIfNeeded(serial: knownSerial)
+        }
         .sheet(isPresented: $showingRestore) {
             RestoreSheet(device: device, serialNumber: knownSerial, jamfName: jamfRecord?.name, restore: restore)
         }
@@ -73,7 +90,7 @@ struct DeviceDetailView: View {
             restore: can.restore ? { showingRestore = true } : nil,
             revive: can.restore ? { showingRevive = true } : nil,
             removeTrust: can.removeTrust ? { actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) } } : nil,
-            retryLookup: can.retryLookup ? { jamf.refresh(for: device) } : nil,
+            retryLookup: can.retryLookup ? { retryLookups() } : nil,
             removeFromList: can.removeFromList ? { monitor.removeFromList(deviceID) } : nil
         )
     }
@@ -83,7 +100,24 @@ struct DeviceDetailView: View {
         DeviceActionAvailability(device: device, busy: isBusy || sheetOpen, editingAssetTag: editingAssetTag,
                                  connectedDeviceCount: connectedDeviceCount,
                                  configuratorAvailable: actions.isConfiguratorAvailable,
-                                 jamfState: jamf.state(for: device))
+                                 jamfState: jamf.state(for: device),
+                                 appleState: appleBusiness.isConfigured ? appleBusiness.state(forSerial: knownSerial) : nil)
+    }
+
+    /// Retry Lookup (the button and Device › Retry Lookup, ⌘R): the Jamf
+    /// lookup and the Apple one, both again.
+    private func retryLookups() {
+        jamf.refresh(for: device)
+        appleBusiness.refresh(serial: knownSerial)
+    }
+
+    /// Whether the Jamf section shows Retry Lookup; else the Apple section
+    /// does, so there is one button in the view.
+    private var jamfSectionShowsRetry: Bool {
+        switch jamf.state(for: device) {
+        case .found, .noMatch, .multipleMatches, .failed: true
+        case .notConfigured, .unavailable, .loading: false
+        }
     }
 
     private var jamfRecord: JamfDeviceRecord? {
@@ -369,6 +403,106 @@ struct DeviceDetailView: View {
         }
     }
 
+    // MARK: Apple Business and Apple School Manager
+
+    private var appleBusinessSection: some View {
+        Section(appleBusiness.productName) {
+            switch appleBusiness.state(forSerial: knownSerial) {
+            case .notConfigured:
+                EmptyView()
+
+            case .unavailable(let reason):
+                Text(reason)
+                    .foregroundStyle(.secondary)
+
+            case .loading:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking up…")
+                        .foregroundStyle(.secondary)
+                }
+
+            case .found(let record):
+                appleBusinessRecordRows(record)
+
+            case .notInOrganization:
+                Label("This device isn’t in your \(appleBusiness.productName) organization.", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+                if !jamfSectionShowsRetry { retryButton }
+
+            case .failed(let message):
+                TintedLabel(message, systemImage: "xmark.octagon.fill", tint: .red)
+                    .textSelection(.enabled)
+                if !jamfSectionShowsRetry { retryButton }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func appleBusinessRecordRows(_ record: AppleBusinessRecord) -> some View {
+        let device = record.device
+        // The serial number is in the Device section already.
+        if let model = device.deviceModel {
+            LabeledContent("Model", value: model)
+        }
+        if let family = AppleBusinessText.productFamily(device) {
+            LabeledContent("Product Family", value: family)
+        }
+        LabeledContent("Status") {
+            appleBusinessStatus(device)
+        }
+        if let problem = record.serverProblem {
+            TintedLabel("The device management service couldn’t be read: \(problem)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                .textSelection(.enabled)
+        } else {
+            LabeledContent("Device Management Service", value: record.mdmServerName ?? "None")
+        }
+        if let order = device.orderNumber {
+            LabeledContent("Order Number", value: order)
+        }
+        if let source = AppleBusinessText.purchaseSource(device) {
+            LabeledContent("Purchase Source", value: source)
+        }
+        if let added = device.addedToOrgDateTime.flatMap(ABM.date) {
+            LabeledContent("Added", value: added.formatted(date: .abbreviated, time: .omitted))
+        }
+        if let problem = record.coverageProblem {
+            TintedLabel("AppleCare couldn’t be read: \(problem)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+                .textSelection(.enabled)
+        } else if record.coverage.isEmpty {
+            LabeledContent("AppleCare", value: "No coverage listed")
+        } else {
+            ForEach(record.coverage) { coverage in
+                LabeledContent(coverage.description ?? "AppleCare") {
+                    Text(AppleBusinessText.coverage(coverage))
+                        .foregroundStyle(coverage.isActive ? Color.primary : Color.secondary)
+                }
+            }
+        }
+        HStack {
+            if let url = appleBusiness.portalURL {
+                Link(destination: url) {
+                    Label("Open in \(appleBusiness.productName)", systemImage: "arrow.up.forward.app")
+                }
+                .help("Opens \(appleBusiness.productName); search for the serial number there")
+            }
+            Spacer()
+            if !jamfSectionShowsRetry { retryButton }
+        }
+    }
+
+    /// Green for Assigned only; Unassigned in orange (it can't enroll until
+    /// it is assigned); Released and anything else neutral.
+    private func appleBusinessStatus(_ device: ABM.OrgDevice) -> some View {
+        let text = AppleBusinessText.status(device)
+        return switch AppleBusinessText.statusKind(device) {
+        case .assigned: TintedLabel(text, systemImage: "checkmark.seal.fill", tint: .green)
+        case .unassigned: TintedLabel(text, systemImage: "exclamationmark.circle", tint: .orange)
+        case .released: TintedLabel(text, systemImage: "xmark.seal", tint: .secondary)
+        case .other: TintedLabel(text, systemImage: "questionmark.circle", tint: .secondary)
+        }
+    }
+
     // MARK: Jamf
 
     @ViewBuilder
@@ -465,13 +599,16 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// The view's one Retry Lookup, for both lookups.
     private var retryButton: some View {
         Button {
-            jamf.refresh(for: device)
+            retryLookups()
         } label: {
             Label("Retry Lookup", systemImage: "arrow.clockwise")
         }
-        .help("Run the \(jamf.productName) lookup again")
+        .help(appleBusiness.isConfigured
+              ? "Run the \(jamf.productName) and \(appleBusiness.productName) lookups again"
+              : "Run the \(jamf.productName) lookup again")
     }
 }
 
@@ -722,7 +859,7 @@ nonisolated struct DeviceActionAvailability: Equatable {
     ///     menu) the Restore or Revive sheet is open.
     ///   - editingAssetTag: the asset tag editor is open.
     init(device: USBDevice, busy: Bool, editingAssetTag: Bool, connectedDeviceCount: Int,
-         configuratorAvailable: Bool, jamfState: JamfLookupState) {
+         configuratorAvailable: Bool, jamfState: JamfLookupState, appleState: AppleBusinessLookupState? = nil) {
         let offers = Offers(device: device)
         let ready = device.isConnected && !busy
         let vdm = ready && !Self.vdmUnavailable(connectedDeviceCount: connectedDeviceCount)
@@ -733,10 +870,16 @@ nonisolated struct DeviceActionAvailability: Equatable {
         restore = ready && offers.restore
             && Self.restoreUnavailableReason(device: device, configuratorAvailable: configuratorAvailable) == nil
         removeTrust = ready && offers.removeTrust && configuratorAvailable
-        retryLookup = switch jamfState {
+        // Either lookup has an answer to repeat; Retry repeats both.
+        let jamfRetry = switch jamfState {
         case .found, .noMatch, .multipleMatches, .failed: true
         case .notConfigured, .unavailable, .loading: false
         }
+        let appleRetry = switch appleState {
+        case .found, .notInOrganization, .failed: true
+        case .notConfigured, .unavailable, .loading, nil: false
+        }
+        retryLookup = jamfRetry || appleRetry
         removeFromList = !device.isConnected && !editingAssetTag
     }
 

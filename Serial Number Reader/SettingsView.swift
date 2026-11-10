@@ -2,9 +2,12 @@ import JTKit
 import SwiftUI
 
 /// The Settings window's Connections tab: JTKit's shared list and editor for
-/// the saved Jamf connections, with what each one needs below the fields.
+/// the saved Jamf connections and Apple accounts (`AppConnection`), with two
+/// roles, the Jamf connection in use and the Apple account in use, and what
+/// each one needs below the fields.
 struct SettingsView: View {
     let jamf: JamfStore
+    let appleBusiness: AppleBusinessStore
 
     var body: some View {
         let connections = jamf.connections
@@ -24,18 +27,23 @@ struct SettingsView: View {
             }
     }
 
-    private func connectionsTab(_ connections: JamfConnectionStore) -> some View {
+    private func connectionsTab(_ connections: AppConnectionStore) -> some View {
         @Bindable var connections = connections
         return ConnectionsSettingsTab(
             store: connections.connections,
-            services: [.jamfPro, .jamfPlatform, .jamfSchool],
+            services: AppConnection.services,
             optionalFields: [.jamfProWebURL],
-            roles: [jamf.connectionRole(selection: $connections.activeID)],
+            serviceGroups: AppConnection.serviceGroups,
+            roles: [jamf.connectionRole(selection: $connections.activeID),
+                    appleBusiness.connectionRole(selection: $connections.activeAppleID)],
             newRecord: { connections.newConnection(service: $0) },
             didDelete: { _ in connections.connectionWasDeleted() },
             test: { record, typed in
                 let typedSecret = typed[.main].flatMap { $0.isEmpty ? nil : $0 }
-                return try await jamf.testConnection(record, typedSecret: typedSecret)
+                switch record {
+                case .jamf(let record): return try await jamf.testConnection(record, typedSecret: typedSecret)
+                case .apple(let record): return try await appleBusiness.testConnection(record, typedSecret: typedSecret)
+                }
             }
         ) { record in
             Section {
@@ -45,6 +53,19 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    static func help(for record: AppConnection) -> String {
+        switch record {
+        case .jamf(let record): help(for: record)
+        case .apple(let record): help(for: record)
+        }
+    }
+
+    /// Where to create the API account and what it needs.
+    static func help(for record: AppleBusinessConnection) -> String {
+        let product = record.service == .appleSchoolManager ? "Apple School Manager" : "Apple Business"
+        return "Optional: looks each device’s serial number up in \(product). The app only reads. Create an API account for this app alone, so you can revoke it on its own. In \(product), create it under your name at the bottom of the sidebar → Preferences → API, and download its private key (.pem), which is shown only once. Enter the account’s client ID and key ID, then paste the private key or import the .pem file. The private key is stored in the Keychain. Without an Apple account the app never contacts \(product)."
     }
 
     /// Where to create the credentials and which permissions they need.
@@ -67,7 +88,7 @@ struct SettingsView: View {
 #Preview {
     SettingsTabs {
         // Never the saved connections: a throwaway store, as for the unit tests.
-        SettingsView(jamf: .preview)
+        SettingsView(jamf: .preview, appleBusiness: .preview)
     }
     .environment(UpdateChecker(configuration: UpdateConfiguration(owner: "JordyThery", repository: "Serial-Number-Reader", appName: "Serial Number Reader")))
 }
