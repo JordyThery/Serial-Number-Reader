@@ -35,7 +35,7 @@ nonisolated enum SessionExport {
         "Apple Business Status", "Apple Business MDM Server",
     ]
 
-    /// - Parameter appleBusiness: the device's Apple Business or School Manager
+    /// - Parameter appleBusiness: the device's Apple Business or Apple School Manager
     ///   lookup so far; nil (or not configured) leaves its columns empty.
     static func row(for device: USBDevice, jamf: JamfLookupState, appleBusiness: AppleBusinessLookupState? = nil) -> Row {
         var row = Row()

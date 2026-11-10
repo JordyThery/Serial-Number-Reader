@@ -1,18 +1,33 @@
 import Foundation
 import JTKit
 
-/// How Apple Business and Apple School Manager's values are worded in the
+/// How Apple Business and Apple School Manager values are worded in the
 /// detail view and the CSV export.
 nonisolated enum AppleBusinessText {
 
+    /// How the detail view shows a status: only an assigned device looks
+    /// done (green); an unassigned one needs a device management service
+    /// before it can enroll (orange); anything else is neutral.
+    enum StatusKind: Equatable {
+        case assigned, unassigned, released, other
+    }
+
+    static func statusKind(_ device: ABM.OrgDevice) -> StatusKind {
+        if device.isReleased { return .released }
+        switch device.status?.uppercased() {
+        case "ASSIGNED": return .assigned
+        case "UNASSIGNED": return .unassigned
+        default: return .other
+        }
+    }
+
     /// "Assigned", "Unassigned" or "Released"; Apple's own word for anything else.
     static func status(_ device: ABM.OrgDevice) -> String {
-        if device.isReleased { return "Released" }
-        switch device.status?.uppercased() {
-        case "ASSIGNED": return "Assigned"
-        case "UNASSIGNED": return "Unassigned"
-        case let other?: return other.capitalized
-        case nil: return "Unknown"
+        switch statusKind(device) {
+        case .assigned: "Assigned"
+        case .unassigned: "Unassigned"
+        case .released: "Released"
+        case .other: device.status.map(\.capitalized) ?? "Unknown"
         }
     }
 

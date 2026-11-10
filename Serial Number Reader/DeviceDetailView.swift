@@ -386,7 +386,7 @@ struct DeviceDetailView: View {
         }
     }
 
-    // MARK: Apple Business / School Manager
+    // MARK: Apple Business and Apple School Manager
 
     private var appleBusinessSection: some View {
         Section(appleBusiness.productName) {
@@ -424,7 +424,7 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func appleBusinessRecordRows(_ record: AppleBusinessRecord) -> some View {
         let device = record.device
-        CopyableRow(label: "Serial Number", value: device.serialNumber, showsQR: true)
+        // The serial number is in the Device section already.
         if let model = device.deviceModel {
             LabeledContent("Model", value: model)
         }
@@ -432,9 +432,7 @@ struct DeviceDetailView: View {
             LabeledContent("Product Family", value: family.capitalized)
         }
         LabeledContent("Status") {
-            TintedLabel(AppleBusinessText.status(device),
-                        systemImage: device.isReleased ? "xmark.seal" : "checkmark.seal.fill",
-                        tint: device.isReleased ? .secondary : .green)
+            appleBusinessStatus(device)
         }
         LabeledContent("MDM Server", value: record.mdmServerName ?? "None")
         if let order = device.orderNumber {
@@ -468,6 +466,18 @@ struct DeviceDetailView: View {
             }
             Spacer()
             appleBusinessRetryButton
+        }
+    }
+
+    /// Green for Assigned only; Unassigned in orange (it can't enroll until
+    /// it is assigned); Released and anything else neutral.
+    private func appleBusinessStatus(_ device: ABM.OrgDevice) -> some View {
+        let text = AppleBusinessText.status(device)
+        return switch AppleBusinessText.statusKind(device) {
+        case .assigned: TintedLabel(text, systemImage: "checkmark.seal.fill", tint: .green)
+        case .unassigned: TintedLabel(text, systemImage: "exclamationmark.circle", tint: .orange)
+        case .released: TintedLabel(text, systemImage: "xmark.seal", tint: .secondary)
+        case .other: TintedLabel(text, systemImage: "questionmark.circle", tint: .secondary)
         }
     }
 

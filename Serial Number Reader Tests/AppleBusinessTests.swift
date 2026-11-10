@@ -396,6 +396,23 @@ struct AppleBusinessTests {
         }
     }
 
+    // MARK: Status
+
+    @Test("Only an assigned device looks assigned: Unassigned, Released and others are told apart")
+    func statusKinds() throws {
+        func device(_ status: String?) throws -> ABM.OrgDevice {
+            // the record's attributes, as JTKit decodes them
+            let json = status.map { #"{"serialNumber": "X", "status": "\#($0)"}"# } ?? #"{"serialNumber": "X"}"#
+            return try JSONDecoder().decode(ABM.OrgDevice.self, from: Data(json.utf8))
+        }
+        #expect(AppleBusinessText.statusKind(try device("ASSIGNED")) == .assigned)
+        #expect(AppleBusinessText.statusKind(try device("UNASSIGNED")) == .unassigned)
+        #expect(AppleBusinessText.status(try device("UNASSIGNED")) == "Unassigned")
+        #expect(AppleBusinessText.statusKind(try device("SOMETHING_NEW")) == .other)
+        #expect(AppleBusinessText.statusKind(try device(nil)) == .other)
+        #expect(AppleBusinessText.status(try device(nil)) == "Unknown")
+    }
+
     // MARK: Storage
 
     @Test("Apple accounts are saved apart: their own key and Keychain store, and the Jamf list stays byte for byte")
