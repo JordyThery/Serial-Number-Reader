@@ -337,6 +337,11 @@ struct RestoreBanner: View {
             .padding(12)
             .background(.regularMaterial, in: .rect(cornerRadius: 10))
             .padding([.horizontal, .top], 12)
+            // A restore takes minutes: VoiceOver hears how it ended.
+            .onChange(of: job.state) { old, new in
+                guard old == .running, new != .running else { return }
+                AccessibilityNotification.Announcement("\(title(for: job)). \(detail(for: job))").post()
+            }
         }
     }
 

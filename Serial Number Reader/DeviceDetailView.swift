@@ -70,6 +70,11 @@ struct DeviceDetailView: View {
         }
         // The Device menu: the same actions, on the same conditions.
         .focusedSceneValue(\.deviceActions, menuActions)
+        // Waiting for the device can take minutes: VoiceOver hears how it ended.
+        .onChange(of: actions.waitingForReturn) { old, new in
+            guard old != nil, new == nil else { return }
+            AccessibilityNotification.Announcement(actions.lastError ?? actions.lastNote ?? "The device is back.").post()
+        }
     }
 
     /// What the Device menu offers for this device; nil where the button
