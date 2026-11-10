@@ -479,15 +479,19 @@ struct DeviceDetailView: View {
                 }
             }
         }
-        HStack {
-            if let url = appleBusiness.portalURL {
-                Link(destination: url) {
-                    Label("Open in \(appleBusiness.productName)", systemImage: "arrow.up.forward.app")
+        // Only when it holds something: in demo mode there is no link, and
+        // Retry Lookup is usually in the Jamf section.
+        if appleBusiness.portalURL != nil || !jamfSectionShowsRetry {
+            HStack {
+                if let url = appleBusiness.portalURL {
+                    Link(destination: url) {
+                        Label("Open in \(appleBusiness.productName)", systemImage: "arrow.up.forward.app")
+                    }
+                    .help("Opens \(appleBusiness.productName); search for the serial number there")
                 }
-                .help("Opens \(appleBusiness.productName); search for the serial number there")
+                Spacer()
+                if !jamfSectionShowsRetry { retryButton }
             }
-            Spacer()
-            if !jamfSectionShowsRetry { retryButton }
         }
     }
 
