@@ -355,6 +355,25 @@ struct AppleBusinessTests {
         #expect(record.coverageProblem != nil)
     }
 
+    @Test("A failed assigned-server or server-list request keeps the device that was found")
+    func serverFailureKeepsDevice() async throws {
+        for failing in ["/v1/orgDevices/\(Self.serial)/relationships/assignedServer", "/v1/mdmServers"] {
+            let rig = try makeRig { request in
+                request.path == failing
+                    ? .json(403, #"{"errors": [{"status": "403", "code": "FORBIDDEN", "title": "Not allowed"}]}"#)
+                    : nil
+            }
+            guard case .found(let record) = await finished(rig.store) else {
+                Issue.record("\(failing) failing hid the device: \(rig.store.state(forSerial: Self.serial))")
+                continue
+            }
+            #expect(record.device.serialNumber == Self.serial)
+            #expect(record.mdmServerName == nil)
+            #expect(record.serverProblem?.contains("403") == true)
+            #expect(record.coverage.count == 1)
+        }
+    }
+
     // MARK: Errors
 
     @Test("404: the device isn't in the organization")

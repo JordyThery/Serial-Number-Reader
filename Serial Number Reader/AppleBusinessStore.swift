@@ -10,6 +10,9 @@ nonisolated struct AppleBusinessRecord: Equatable, Sendable {
     /// The device management service the device is assigned to; nil when it
     /// has none.
     var mdmServerName: String?
+    /// Why the device management service isn't shown, when only that
+    /// request (or the list of services) failed.
+    var serverProblem: String?
     var coverage: [ABM.AppleCareCoverage]
     /// Why the coverage isn't shown, when only that request failed.
     var coverageProblem: String?
@@ -333,17 +336,30 @@ final class AppleBusinessStore {
 
     /// One device: its record, the service it is assigned to and its
     /// AppleCare coverage. Only a failure of the device record itself fails
-    /// the lookup; a failed coverage request is shown next to the rest.
+    /// the lookup; a failed service or coverage request is shown next to
+    /// the rest.
     nonisolated static func lookup(serial: String, client: ABM.Client, serverNames: [String: String]?)
         async throws -> (AppleBusinessLookupState, [String: String]?) {
         guard let device = try await client.device(serial: serial) else { return (.notInOrganization, serverNames) }
         var names = serverNames
         var serverName: String?
+        var serverProblem: String?
         // An unassigned or released device has no service: one request saved.
         let kind = AppleBusinessText.statusKind(device)
-        if kind != .unassigned, kind != .released, let serverID = try await client.assignedServerID(serial: serial) {
-            if names == nil { names = Dictionary(try await client.mdmServers().map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }) }
-            serverName = names?[serverID] ?? serverID
+        if kind != .unassigned, kind != .released {
+            do {
+                if let serverID = try await client.assignedServerID(serial: serial) {
+                    if names == nil {
+                        names = Dictionary(try await client.mdmServers().map { ($0.id, $0.name) },
+                                           uniquingKeysWith: { first, _ in first })
+                    }
+                    serverName = names?[serverID] ?? serverID
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                serverProblem = error.localizedDescription
+            }
         }
         var coverage: [ABM.AppleCareCoverage] = []
         var coverageProblem: String?
@@ -354,8 +370,8 @@ final class AppleBusinessStore {
         } catch {
             coverageProblem = error.localizedDescription
         }
-        let record = AppleBusinessRecord(device: device, mdmServerName: serverName, coverage: coverage,
-                                         coverageProblem: coverageProblem)
+        let record = AppleBusinessRecord(device: device, mdmServerName: serverName, serverProblem: serverProblem,
+                                         coverage: coverage, coverageProblem: coverageProblem)
         return (.found(record), names)
     }
 
