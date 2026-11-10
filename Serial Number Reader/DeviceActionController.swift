@@ -59,6 +59,15 @@ final class DeviceActionController {
             }
         }
 
+        /// Sent, but the device wasn't seen to come back (a warning).
+        func notConfirmedSummary(_ device: String) -> String {
+            switch self {
+            case .reboot: "Sent Restart to \(device); not confirmed"
+            case .dfu: "Sent Enter DFU to \(device); not confirmed"
+            default: summary(device, failed: false)
+            }
+        }
+
         /// The activity log's words when the command was sent but the device
         /// didn't come back.
         func notBackSummary(_ device: String) -> String {
@@ -96,14 +105,39 @@ final class DeviceActionController {
     private(set) var runningAction: Action?
     /// Last human-readable error, shown transiently in the UI.
     private(set) var lastError: String?
-    /// A note on the last action that isn't an error (e.g. the device came
-    /// back but couldn't be confirmed as the same one).
-    private(set) var lastNote: String?
-    /// The action whose device the app is waiting for, after the command.
-    private(set) var waitingForReturn: Action?
+    /// The devices the app is waiting for after Restart or Enter DFU, and
+    /// how each wait ended until it's dismissed (the bar above the details).
+    /// A wait holds nothing up: other actions run meanwhile.
+    private(set) var returnWaits: [ReturnWait] = []
     /// Watches the device list after Restart and Enter DFU; nil doesn't wait
     /// (previews and most tests). Set by the app.
     @ObservationIgnored var returnWatch: DeviceReturnWatch?
+
+    /// One device the app is waiting for, or how that wait ended.
+    struct ReturnWait: Identifiable, Equatable {
+        enum State: Equatable {
+            case waiting
+            /// Back in the expected mode.
+            case back
+            /// Done, with a note: back but not confirmed, or sent but not seen
+            /// (a locked device, a Mac), or Stop Waiting. Orange, not failed.
+            case notConfirmed(String)
+            /// The device didn't come back where it should have.
+            case failed(String)
+        }
+
+        let id = UUID()
+        let action: Action
+        let target: Target
+        let expectation: DeviceReturnExpectation
+        let simulated: Bool
+        var state: State = .waiting
+
+        /// "Waiting up to 30 seconds for iPhone 16 to come back in DFU mode".
+        var waitingText: String {
+            "Waiting up to \(expectation.timeoutText) for \(target.name) to come back\(expectation.modeText)"
+        }
+    }
     /// The device that refused Enter Recovery because it doesn't trust this
     /// Mac; the Actions section shows trust and button-step guidance for it.
     private(set) var trustRequiredDeviceID: UInt64?
@@ -118,10 +152,6 @@ final class DeviceActionController {
         /// The VDM went out, but the device's reply was missed: it may
         /// already be rebooting.
         case replyMissed
-        /// Done, with a note (e.g. back, but not confirmed as the same device).
-        case doneWithNote(String)
-        /// The command went out, but the device didn't come back.
-        case notBack(String)
 
         init(errorMessage: String?) {
             self = errorMessage.map(Outcome.failed) ?? .done
@@ -213,20 +243,12 @@ final class DeviceActionController {
 
     /// Why Restart and Enter DFU can't go to this device now, or nil. Reads
     /// the IORegistry (no privileges); the pretend iPhone is always reachable.
-    /// Kept a few seconds, so a redraw doesn't read the registry each time.
+    /// The detail view asks every few seconds, not while drawing.
     func portRefusal(for device: USBDevice) -> USBCPort.Refusal? {
         if PretendIPhone.isPretend(device) { return nil }
-        if let cached = portChecks[device.id], now().timeIntervalSince(cached.at) < Self.portCheckLifetime {
-            return cached.refusal
-        }
-        var refusal: USBCPort.Refusal?
-        if case .failure(let reason) = hardware.usbCPort(forEntryID: device.id) { refusal = reason }
-        portChecks[device.id] = (refusal, now())
-        return refusal
+        if case .failure(let refusal) = hardware.usbCPort(forEntryID: device.id) { return refusal }
+        return nil
     }
-
-    nonisolated static let portCheckLifetime: TimeInterval = 3
-    @ObservationIgnored private var portChecks: [UInt64: (refusal: USBCPort.Refusal?, at: Date)] = [:]
 
     private func sendVDM(_ action: Action, _ command: String, to device: USBDevice,
                          expecting expectation: DeviceReturnExpectation?,
@@ -343,14 +365,14 @@ final class DeviceActionController {
         }
         runningAction = action
         lastError = nil
-        lastNote = nil
         trustRequiredDeviceID = nil
         let started = ContinuousClock.now
         let startDate = Date.now
         let task = Task {
             var outcome = await work()
-            // Success only once the same device is back in the expected mode;
-            // after a missed reply, a short watch instead of a failure.
+            // The command went out: the device is watched for on its own, and
+            // the app is free for other devices meanwhile. After a missed
+            // reply, a short watch instead of a failure.
             if let expectation, let watch = returnWatch {
                 let watched: DeviceReturnExpectation? = switch outcome {
                 case .done: expectation
@@ -358,43 +380,27 @@ final class DeviceActionController {
                 default: nil
                 }
                 if let watched {
-                    waitingForReturn = action
-                    outcome = switch await watch.wait(for: watched, since: startDate) {
-                    case .back: .done
-                    case .backUnconfirmed(let note): .doneWithNote(note)
-                    case .notBack(let message): .notBack(message)
-                    }
-                    waitingForReturn = nil
+                    runningAction = nil
+                    watchForReturn(action, target, watched, simulated: simulated, since: startDate, started: started,
+                                   watch: watch, onSuccess: onSuccess)
+                    return
                 }
             }
             if outcome == .replyMissed {
                 outcome = .failed(VDMToolReplyMissed + " Check whether the device restarted.")
             }
-            let elapsed = started.duration(to: .now)
-            let duration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-            func note(_ text: String?) -> String? {
-                guard simulated else { return text }
-                return [text, Self.demoNote].compactMap { $0 }.joined(separator: " ")
-            }
+            let duration = Self.seconds(since: started)
             switch outcome {
             case .done:
-                record(action, target, failed: false, note: note(nil), simulated: simulated, duration: duration)
+                record(action, target, failed: false, note: note(nil, simulated), simulated: simulated, duration: duration)
                 onSuccess?()
-            case .doneWithNote(let text):
-                record(action, target, failed: false, note: note(text), simulated: simulated, duration: duration)
-                lastNote = text
-                onSuccess?()
-            case .notBack(let message):
-                record(action, target, failed: true, note: note(message), simulated: simulated, duration: duration,
-                       summary: action.notBackSummary(target.name))
-                lastError = message
             case .failed(let message):
                 // The message can hold a UDID or the device's reply: private.
                 logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .private)")
-                record(action, target, failed: true, note: note(message), simulated: simulated, duration: duration)
+                record(action, target, failed: true, note: note(message, simulated), simulated: simulated, duration: duration)
                 lastError = message
             case .trustRequired(let deviceID):
-                record(action, target, failed: true, note: note("The device doesn’t trust this Mac."),
+                record(action, target, failed: true, note: note("The device doesn’t trust this Mac.", simulated),
                        simulated: simulated, duration: duration)
                 trustRequiredDeviceID = deviceID
             case .cancelled, .replyMissed:
@@ -404,6 +410,78 @@ final class DeviceActionController {
         }
         currentTask = task
         return task
+    }
+
+    /// The last wait's task, so tests can wait for it.
+    @ObservationIgnored private(set) var currentWaitTask: Task<Void, Never>?
+    @ObservationIgnored private var waitTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Watches for the device after the command, then records how it ended:
+    /// back (done), not confirmed (a warning, never a failure: sent but not
+    /// seen, or Stop Waiting), or not back where it had to be (failed).
+    private func watchForReturn(_ action: Action, _ target: Target, _ expectation: DeviceReturnExpectation,
+                                simulated: Bool, since startDate: Date, started: ContinuousClock.Instant,
+                                watch: DeviceReturnWatch, onSuccess: (@MainActor () -> Void)?) {
+        let wait = ReturnWait(action: action, target: target, expectation: expectation, simulated: simulated)
+        returnWaits.append(wait)
+        let task = Task {
+            let result = await watch.wait(for: expectation, since: startDate)
+            let duration = Self.seconds(since: started)
+            let state: ReturnWait.State
+            switch result {
+            case .back:
+                state = .back
+                record(action, target, failed: false, note: note(nil, simulated), simulated: simulated, duration: duration)
+                onSuccess?()
+            case .backUnconfirmed(let text):
+                state = .notConfirmed(text)
+                recordNotConfirmed(action, target, text, simulated: simulated, duration: duration)
+            case .stopped:
+                let text = "Sent; stopped waiting before the device came back."
+                state = .notConfirmed(text)
+                recordNotConfirmed(action, target, text, simulated: simulated, duration: duration)
+            case .notBack(let message) where expectation.mayStayHidden:
+                state = .notConfirmed(message)
+                recordNotConfirmed(action, target, message, simulated: simulated, duration: duration)
+            case .notBack(let message):
+                state = .failed(message)
+                record(action, target, failed: true, note: note(message, simulated), simulated: simulated,
+                       duration: duration, summary: action.notBackSummary(target.name))
+            }
+            if let index = returnWaits.firstIndex(where: { $0.id == wait.id }) { returnWaits[index].state = state }
+            waitTasks[wait.id] = nil
+        }
+        waitTasks[wait.id] = task
+        currentWaitTask = task
+    }
+
+    /// Stop Waiting: ends the wait now; recorded as sent, not confirmed.
+    func stopWaiting(_ id: ReturnWait.ID) {
+        waitTasks[id]?.cancel()
+    }
+
+    /// Takes a finished wait's result away; a running one is stopped first.
+    func dismissWait(_ id: ReturnWait.ID) {
+        if returnWaits.first(where: { $0.id == id })?.state == .waiting { return stopWaiting(id) }
+        returnWaits.removeAll { $0.id == id }
+    }
+
+    private func note(_ text: String?, _ simulated: Bool) -> String? {
+        guard simulated else { return text }
+        return [text, Self.demoNote].compactMap { $0 }.joined(separator: " ")
+    }
+
+    private nonisolated static func seconds(since started: ContinuousClock.Instant) -> TimeInterval {
+        let elapsed = started.duration(to: .now)
+        return Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+    }
+
+    /// Sent, but not seen to arrive: a warning entry, never a failure.
+    private func recordNotConfirmed(_ action: Action, _ target: Target, _ text: String, simulated: Bool,
+                                    duration: TimeInterval) {
+        activityLog?.recordAction(action.notConfirmedSummary(target.name), note: note(text, simulated), isWarning: true,
+                                  service: action.service, connection: simulated ? "Demo" : nil,
+                                  devices: target.identifiers, duration: duration)
     }
 
     private func record(_ action: Action, _ target: Target, failed: Bool, note: String?, simulated: Bool,

@@ -8,29 +8,28 @@ import Foundation
 /// The helper trusts nothing it is given: it follows the device's chain to
 /// its USB-C port itself (`USBCPort`), opens only that port, and checks the
 /// chain once more just before sending. A wrong or stale entry ID can only be
-/// refused, never sent elsewhere.
+/// refused, never sent elsewhere. There is no form without a device: the app
+/// has no button for a device it can't see, so nothing is sent to "the one
+/// connected port" any more.
 nonisolated enum PrivilegedVDM {
 
     struct Arguments: Equatable {
         /// `reboot` or `dfu`.
         let action: String
-        /// The device's registry entry ID; nil for a device without a USB
-        /// entry, which keeps the rule of one connected port.
-        let deviceEntryID: UInt64?
+        /// The device's registry entry ID.
+        let deviceEntryID: UInt64
     }
 
     static let actions: Set<String> = ["reboot", "dfu"]
 
-    /// The arguments after the executable, accepted only in these exact
-    /// forms: `--vdm <action>` or `--vdm <action> --entry <1–16 hex digits>`.
+    /// The arguments after the executable, accepted only in this exact
+    /// form: `--vdm <action> --entry <1–16 hex digits>`.
     static func parse(_ arguments: [String]) -> Arguments? {
-        guard arguments.count == 2 || arguments.count == 4,
-              arguments[0] == "--vdm", actions.contains(arguments[1])
+        guard arguments.count == 4, arguments[0] == "--vdm", actions.contains(arguments[1]),
+              arguments[2] == "--entry"
         else { return nil }
-        guard arguments.count == 4 else { return Arguments(action: arguments[1], deviceEntryID: nil) }
         let hex = arguments[3]
-        guard arguments[2] == "--entry", (1...16).contains(hex.count),
-              hex.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+        guard (1...16).contains(hex.count), hex.allSatisfy({ $0.isASCII && $0.isHexDigit }),
               let id = UInt64(hex, radix: 16)
         else { return nil }
         return Arguments(action: arguments[1], deviceEntryID: id)
@@ -47,27 +46,24 @@ nonisolated enum PrivilegedVDM {
     /// Runs as root. Returns the process's exit code; the message goes to
     /// standard error, which the app shows.
     static func run(_ arguments: Arguments, registry: some USBCPortRegistry = LiveUSBCPortRegistry(),
-                    isAppleSilicon: Bool = USBCPort.isAppleSilicon, underTest: USBGuard = .shared,
+                    isAppleSilicon: Bool = USBCPort.isAppleSilicon, isTranslated: Bool = USBCPort.isTranslated,
+                    underTest: USBGuard = .shared,
                     send: (String, UInt64, @escaping () -> Bool) -> Int32 = { action, controller, recheck in
                         VDMTool.run(withAction: action, onControllerWithEntryID: controller, recheck: recheck)
                     },
-                    sendWithoutDevice: (String) -> Int32 = { VDMTool.run(withAction: $0) },
                     error: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }) -> Int32 {
         // Never under tests (a third safeguard: the prompt that starts this is refused too).
         if underTest.refusal(for: "--vdm \(arguments.action)") != nil { return 2 }
-        guard isAppleSilicon else {
-            error(USBCPort.Refusal.intelMac.message)
-            return refusedExitCode
+        func locate() -> USBCPort.Check {
+            USBCPort.locate(deviceEntryID: arguments.deviceEntryID, in: registry, isAppleSilicon: isAppleSilicon,
+                            isTranslated: isTranslated)
         }
-        guard let deviceEntryID = arguments.deviceEntryID else { return sendWithoutDevice(arguments.action) }
-        switch USBCPort.locate(deviceEntryID: deviceEntryID, in: registry, isAppleSilicon: isAppleSilicon) {
+        switch locate() {
         case .failure(let refusal):
             error(refusal.message)
             return refusedExitCode
         case .success(let target):
-            return send(arguments.action, target.controllerID) {
-                USBCPort.locate(deviceEntryID: deviceEntryID, in: registry, isAppleSilicon: isAppleSilicon) == .success(target)
-            }
+            return send(arguments.action, target.controllerID) { locate() == .success(target) }
         }
     }
 }

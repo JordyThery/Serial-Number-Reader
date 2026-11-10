@@ -10,27 +10,18 @@ import Testing
 @Suite("Power action safeguards")
 struct PowerActionSafetyTests {
 
-    // MARK: Restart and Enter DFU: one port only
+    // MARK: Restart and Enter DFU: the device's own port only
 
-    @Test("The root helper sends Restart or Enter DFU only when exactly one USB-C port has something connected")
-    func onePortOnly() {
-        #expect(VDMTool.exitCode(forConnectedPorts: 1) == 0)
-        #expect(VDMTool.refusal(forConnectedPorts: 1) == nil)
-        // Nothing connected: code 2.
-        #expect(VDMTool.exitCode(forConnectedPorts: 0) == 2)
-        #expect(VDMTool.refusal(forConnectedPorts: 0) == "No device is connected to a USB-C port.")
-        // A second device, a charger or a hub: refused, code 4, before anything is sent.
-        for count in [2, 3, 8] {
-            #expect(VDMTool.exitCode(forConnectedPorts: count) == 4)
-            let message = VDMTool.refusal(forConnectedPorts: count) ?? ""
-            #expect(message.hasPrefix("More than one USB-C port has something connected"))
-            #expect(message.hasSuffix("try again."))
-        }
+    @Test("The root helper takes only a device: the old form for whichever port has something connected is gone")
+    func onlyWithADevice() {
+        #expect(PrivilegedVDM.parse(["--vdm", "reboot"]) == nil)
+        #expect(PrivilegedVDM.parse(["--vdm", "dfu"]) == nil)
+        #expect(PrivilegedVDM.parse(["--vdm", "dfu", "--entry", "1a2b"]) == .init(action: "dfu", deviceEntryID: 0x1A2B))
     }
 
     @Test("A bad action never reaches a port")
     func unknownAction() {
-        #expect(VDMTool.run(withAction: "restart-everything") == 1)
+        #expect(VDMTool.run(withAction: "restart-everything", onControllerWithEntryID: 0, recheck: { true }) == 1)
     }
 
     // MARK: Boot to Normal
@@ -50,7 +41,7 @@ struct PowerActionSafetyTests {
         #expect(Run.runResult(status: 0, errorText: "") == .success)
         #expect(Run.runResult(status: 1, errorText: "execution error: User canceled. (-128)") == .cancelled)
         #expect(Run.runResult(status: 1, errorText: "-128") == .cancelled)
-        let refusal = VDMTool.refusal(forConnectedPorts: 2) ?? ""
+        let refusal = USBCPort.Refusal.throughHub.message
         #expect(Run.runResult(status: 1, errorText: refusal) == .failure(refusal))
         #expect(Run.runResult(status: 3, errorText: "") == .failure("The command failed (exit 3)."))
     }

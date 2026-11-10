@@ -206,8 +206,8 @@ device is attached.
 
 - The app passes the selected device's registry entry ID: `--vdm reboot|dfu
   --entry <hex>`. `MyApp.main` hands any launch with `--vdm` to
-  `PrivilegedVDM`, which accepts only that form or the form without a device
-  (`--vdm reboot|dfu`) and exits 1 on anything else; the GUI never starts as root.
+  `PrivilegedVDM`, which accepts only that form and exits 1 on anything else;
+  the GUI never starts as root.
 - The chain is `USBCPort.locate` (steps 2 to 5), run in the app without
   privileges to dim the buttons with the reason, and again by the helper as
   root. The helper opens only that controller (`VDMTool
@@ -217,9 +217,14 @@ device is attached.
   Mac model without the property) is refused with "connect the device
   directly to a USB-C port of this Mac". A hub anywhere above the device is
   refused even if a port would resolve.
-- A device without a USB entry (a booted Mac on a cable) keeps the rule of one
-  connected port, in the helper (`--vdm` without `--entry`). The app has no
-  button for such a device today; it always passes a device.
+- No form without a device (changed after the review of 2026-11-10): the app
+  has no button for a target without a USB entry (a booted Mac on a cable), so
+  the 1.6.0 rule of "exactly one connected port" is gone from the helper too.
+- The walk up from the device and from the port uses the live parent entries
+  and must reach the registry's root; a parent that can't be read refuses,
+  because no hub above it is proven.
+- Under Rosetta both actions are refused before the password (the helper
+  couldn't load the Apple silicon port interface).
 - The buttons are offered for every device whose own port is known, whatever
   else is connected.
 - Exit codes: 5 = refused by the port check, or the port changed before

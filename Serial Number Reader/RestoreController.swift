@@ -178,6 +178,7 @@ final class RestoreController {
                     case .back: break
                     case .backUnconfirmed(let text): confirmation = text
                     case .notBack(let message): throw Configurator.Failure(message: message)
+                    case .stopped: throw CancellationError()
                     }
                 }
                 job?.state = .succeeded

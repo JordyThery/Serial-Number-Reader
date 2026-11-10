@@ -12,9 +12,8 @@
 // command sequences originate there. Reworked to:
 //   * send only to the selected device's own USB-C port (found by
 //     USBCPort and checked again just before sending), opening no other
-//     port; without a device, refuse when more than one port has something
-//     connected: iterator order isn't physical order, and a device the app
-//     can't see (a locked iPhone, another Mac on a cable) must never get it;
+//     port: a device the app can't see (a locked iPhone, another Mac on a
+//     cable) on another port is never reached;
 //   * expose reboot/dfu as a library call returning a status code.
 
 namespace {
@@ -226,20 +225,6 @@ NSString *const VDMToolPortNotConnected =
 
 @implementation VDMTool
 
-+ (int32_t)exitCodeForConnectedPorts:(NSInteger)count {
-    if (count == 0) return 2;
-    if (count > 1) return 4;
-    return 0;
-}
-
-+ (nullable NSString *)refusalForConnectedPorts:(NSInteger)count {
-    switch ([self exitCodeForConnectedPorts:count]) {
-    case 2: return @"No device is connected to a USB-C port.";
-    case 4: return @"More than one USB-C port has something connected, such as another device, a charger or a hub, so the command could reach the wrong one. Disconnect everything except this device and try again.";
-    default: return nil;
-    }
-}
-
 + (int32_t)runWithAction:(NSString *)action
     onControllerWithEntryID:(uint64_t)entryID
                     recheck:(BOOL (^)(void))recheck {
@@ -295,79 +280,6 @@ NSString *const VDMToolPortNotConnected =
         }
         IOObjectRelease(service);
         return code;
-    } catch (const Failure &f) {
-        fprintf(stderr, "%s\n", f.message.c_str());
-        return 1;
-    } catch (...) {
-        fprintf(stderr, "Something unexpected went wrong.\n");
-        return 1;
-    }
-}
-
-+ (int32_t)runWithAction:(NSString *)action {
-    std::string act = action.UTF8String;
-    if (act != "reboot" && act != "dfu") {
-        fprintf(stderr, "Unknown action: %s\n", act.c_str());
-        return 1;
-    }
-
-    try {
-        uint32_t key = GetUnlockKey();
-
-        CFMutableDictionaryRef matching = IOServiceMatching("AppleHPM");
-        if (!matching)
-            throw Failure{"IOServiceMatching failed."};
-        io_iterator_t iter = 0;
-        if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iter) != kIOReturnSuccess)
-            throw Failure{"IOServiceGetMatchingServices failed."};
-
-        // First every port, then decide: exactly one port with a device, or nothing is sent.
-        std::vector<std::pair<io_service_t, int32_t>> connected;
-        io_service_t device;
-        while ((device = IOIteratorNext(iter))) {
-            int32_t rid = -1;
-            CFNumberRef data = (CFNumberRef)IORegistryEntryCreateCFProperty(
-                device, CFSTR("RID"), kCFAllocatorDefault, 0);
-            if (data) {
-                CFNumberGetValue(data, kCFNumberSInt32Type, &rid);
-                CFRelease(data);
-            }
-            bool isConnected = false;
-            try {
-                isConnected = IsConnected(device, rid);
-            } catch (const Failure &f) {
-                // A port that can't be read can't be sent a command either.
-                fprintf(stderr, "Port RID %d: %s\n", rid, f.message.c_str());
-            }
-            if (isConnected)
-                connected.emplace_back(device, rid);
-            else
-                IOObjectRelease(device);
-        }
-        IOObjectRelease(iter);
-
-        int32_t code = [self exitCodeForConnectedPorts:(NSInteger)connected.size()];
-        if (code != 0) {
-            fprintf(stderr, "%s\n", [self refusalForConnectedPorts:(NSInteger)connected.size()].UTF8String);
-            for (auto &port : connected) IOObjectRelease(port.first);
-            return code;
-        }
-
-        auto port = connected.front();
-        try {
-            RunOnPort(port.first, port.second, act, key);
-        } catch (const ReplyMissed &) {
-            IOObjectRelease(port.first);
-            fprintf(stderr, "%s\n", VDMToolReplyMissed.UTF8String);
-            return 6;
-        } catch (const Failure &f) {
-            IOObjectRelease(port.first);
-            fprintf(stderr, "%s\n", f.message.c_str());
-            return 3;
-        }
-        IOObjectRelease(port.first);
-        printf("Sent '%s' on port RID %d\n", act.c_str(), port.second);
-        return 0;
     } catch (const Failure &f) {
         fprintf(stderr, "%s\n", f.message.c_str());
         return 1;

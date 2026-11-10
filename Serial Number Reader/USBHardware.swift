@@ -63,7 +63,8 @@ nonisolated struct LiveUSBHardware: USBHardware {
     func usbCPort(forEntryID entryID: UInt64) -> USBCPort.Check {
         guard !PretendIPhone.isPretend(id: entryID) else { return .failure(.notAppleDevice) }
         if underTest.refusal(for: "USB-C port check") != nil { return .failure(.underTest) }
-        return USBCPort.locate(deviceEntryID: entryID, in: LiveUSBCPortRegistry(), isAppleSilicon: USBCPort.isAppleSilicon)
+        return USBCPort.locate(deviceEntryID: entryID, in: LiveUSBCPortRegistry(), isAppleSilicon: USBCPort.isAppleSilicon,
+                               isTranslated: USBCPort.isTranslated)
     }
 
     func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> DeviceActionController.Outcome {

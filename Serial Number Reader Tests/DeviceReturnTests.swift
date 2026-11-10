@@ -95,16 +95,35 @@ struct DeviceReturnTests {
         }
     }
 
+    @Test("After a Restore, the restore OS on its way (product ID 0x12AC) isn't the device being back")
+    func restoreOSIsNotBack() async {
+        let list = List()
+        let start = Date.now
+        let expectation = DeviceReturnExpectation.restore(ecid: "0x1A2B3C4D5E6F70", timeout: .milliseconds(100))
+        // The restore OS: booted range, same ECID, connected after the restore started.
+        let restoreOS = USBDevice(id: 20, mode: .normal, productID: 0x12AC, usbProductName: "iPhone", descriptor: nil,
+                                  udid: "00008140-\(Self.ecid)", modelInfo: nil, connectedAt: .now)
+        list.devices = [restoreOS]
+        #expect(await watch(list).wait(for: expectation, since: start) == .notBack(expectation.notBackMessage))
+        // The device started up: another booted product ID.
+        list.devices = [restoreOS, Self.booted(id: 21, at: .now)]
+        #expect(await watch(list).wait(for: expectation, since: start) == .back)
+    }
+
     @Test("The expected modes per action")
     func expectedModes() {
         #expect(DeviceReturnExpectation.restart(of: Self.booted()).modes == [.normal])
-        #expect(DeviceReturnExpectation.restart(of: Self.recovery(id: 1, ecid: Self.ecid)).modes == [.recovery])
+        // Without a known model it may be a Mac, which starts up instead (a known model: see restartNotSeenIsNotAFailure).
+        #expect(DeviceReturnExpectation.restart(of: Self.recovery(id: 1, ecid: Self.ecid)).modes == [.recovery, .normal])
         #expect(DeviceReturnExpectation.restart(of: Self.dfu(id: 1, ecid: Self.ecid)).modes == [.normal, .recovery])
         #expect(DeviceReturnExpectation.dfu(of: Self.booted()).modes == [.dfu])
         #expect(DeviceReturnExpectation.dfu(of: Self.booted()).timeout == .seconds(30))
         #expect(DeviceReturnExpectation.restore(ecid: "0x1A2B3C4D5E6F70").modes == [.normal])
         #expect(DeviceReturnExpectation.restore(ecid: "0x1A2B3C4D5E6F70").ecid == Self.ecid)
         #expect(DeviceReturnExpectation.dfu(of: Self.booted(), timeout: .seconds(90)).afterMissedReply().timeout == .seconds(30))
+        #expect(DeviceReturnExpectation.dfu(of: Self.booted()).timeoutText == "30 seconds")
+        #expect(DeviceReturnExpectation.restart(of: Self.booted()).timeoutText == "2 minutes")
+        #expect(DeviceReturnExpectation.restart(of: Self.booted()).mayStayHidden)
     }
 
     // MARK: The actions
@@ -127,9 +146,9 @@ struct DeviceReturnTests {
         actions.returnWatch = DeviceReturnWatch(devices: { list.devices }, interval: .milliseconds(5),
                                                 maximumWait: .milliseconds(100))
         actions.enterDFU(device: device)
-        #expect(actions.runningAction == .dfu)
         await actions.currentTask?.value
-        #expect(actions.lastError == DeviceReturnExpectation.dfu(of: device).notBackMessage)
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.last?.state == .failed(DeviceReturnExpectation.dfu(of: device).notBackMessage))
         #expect(log.entries.contains { $0.detail.hasPrefix("Sent Enter DFU to") && $0.isFailure })
 
         // It comes back.
@@ -140,9 +159,79 @@ struct DeviceReturnTests {
         }
         actions.enterDFU(device: device)
         await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.last?.state == .back)
         #expect(actions.lastError == nil)
         #expect(log.entries.contains { $0.detail.hasPrefix("Put ") && !$0.isFailure })
         #expect(hardware.calls.filter { $0.hasPrefix("VDM dfu") }.count == 2)
+        // Dismiss takes a finished result away.
+        let ids = actions.returnWaits.map(\.id)
+        ids.forEach(actions.dismissWait)
+        #expect(actions.returnWaits.isEmpty)
+    }
+
+    @Test("While the app waits for a restarted device, other devices can be used; the wait says how long")
+    func waitDoesNotBlock() async throws {
+        let hardware = TrapHardware()
+        let list = List()
+        let actions = controller(hardware, list, log: ActivityLog())
+        actions.returnWatch = DeviceReturnWatch(devices: { list.devices }, interval: .milliseconds(5))
+        actions.restart(device: Self.booted(id: 0x1000_0A01, at: .distantPast))
+        await actions.currentTask?.value
+        // The command went out; the wait runs on its own.
+        #expect(actions.runningAction == nil)
+        #expect(actions.returnWaits.first?.state == .waiting)
+        #expect(actions.returnWaits.first?.waitingText.hasPrefix("Waiting up to 2 minutes for ") == true)
+        // Another device meanwhile.
+        actions.enterDFU(device: Self.recovery(id: 0x1000_0B02, ecid: Self.otherECID, at: .distantPast))
+        await actions.currentTask?.value
+        #expect(hardware.calls.contains("VDM dfu 10000b02"))
+        #expect(actions.returnWaits.count == 2)
+        #expect(actions.returnWaits.last?.waitingText.contains("up to 30 seconds") == true)
+        #expect(actions.returnWaits.last?.waitingText.hasSuffix("in DFU mode") == true)
+        // Stop Waiting on both: sent, not confirmed.
+        for wait in actions.returnWaits { actions.stopWaiting(wait.id) }
+        await actions.currentWaitTask?.value
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(actions.returnWaits.allSatisfy {
+            if case .notConfirmed = $0.state { true } else { false }
+        })
+    }
+
+    @Test("A restarted device that stays off USB (locked, or a Mac) is sent, not confirmed: orange, never failed")
+    func restartNotSeenIsNotAFailure() async throws {
+        let hardware = TrapHardware()
+        let list = List()
+        let log = ActivityLog()
+        let actions = controller(hardware, list, log: log)
+        actions.returnWatch = DeviceReturnWatch(devices: { list.devices }, interval: .milliseconds(5),
+                                                maximumWait: .milliseconds(50))
+
+        actions.restart(device: Self.booted(at: .distantPast))
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.last?.state == .notConfirmed(DeviceReturnExpectation.unlockToSee))
+        #expect(actions.lastError == nil)
+        #expect(log.entries.last?.isFailure == false)
+        #expect(log.entries.last?.isWarning == true)
+        #expect(log.entries.last?.detail.hasSuffix("not confirmed") == true)
+
+        // A device in DFU whose model isn't known may be a Mac: the same, with a word about Macs.
+        let unknownDFU = Self.dfu(id: 0x1000_0C03, ecid: Self.otherECID, at: .distantPast)
+        #expect(DeviceReturnExpectation.restart(of: unknownDFU).mayStayHidden)
+        actions.restart(device: unknownDFU)
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.last?.state
+                == .notConfirmed(DeviceReturnExpectation.unlockToSee + DeviceReturnExpectation.macMayBeHidden))
+        #expect(!log.entries.contains { $0.isFailure })
+
+        // A known iPhone in Recovery stays in Recovery: not coming back there is a failure.
+        let known = USBDevice(id: 0x1000_0D04, mode: .recovery, productID: 0x1281, usbProductName: "Recovery",
+                              descriptor: DescriptorParser.parse("CPID:8140 BDID:08 ECID:\(Self.ecid)"), udid: nil,
+                              modelInfo: ModelInfo(identifier: "iPhone10,1", marketingName: nil), connectedAt: .distantPast)
+        #expect(!DeviceReturnExpectation.restart(of: known).mayStayHidden)
+        #expect(DeviceReturnExpectation.restart(of: known).modes == [.recovery])
     }
 
     @Test("A missed reply is watched for a short time instead of failing at once")
@@ -155,7 +244,8 @@ struct DeviceReturnTests {
         list.devices = [Self.recovery(id: 12, ecid: Self.ecid, at: .now.addingTimeInterval(5))]
         actions.restart(device: Self.recovery(id: 1, ecid: Self.ecid, at: .distantPast))
         await actions.currentTask?.value
-        #expect(actions.lastError == nil)
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.last?.state == .back)
         #expect(log.entries.contains { $0.detail.hasPrefix("Restarted") && !$0.isFailure })
 
         // Without a watch, a missed reply is reported as such.

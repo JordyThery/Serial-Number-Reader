@@ -32,6 +32,9 @@ nonisolated enum USBCPort {
     enum Refusal: Error, Equatable, Sendable {
         /// An Intel Mac: the port commands exist only on Apple silicon.
         case intelMac
+        /// The app runs under Rosetta: the root helper couldn't load the
+        /// port interface (it's Apple silicon code).
+        case rosetta
         /// The device's USB entry is gone (unplugged, or rebooting).
         case deviceGone
         /// Not an iPhone, iPad or Mac product ID.
@@ -50,6 +53,8 @@ nonisolated enum USBCPort {
             switch self {
             case .intelMac:
                 "Restart and Enter DFU work only on a Mac with Apple silicon. On this Mac, use the device’s buttons instead."
+            case .rosetta:
+                "Restart and Enter DFU don’t work while Serial Number Reader runs under Rosetta. Quit it, turn off “Open using Rosetta” in its Get Info window, and open it again."
             case .deviceGone:
                 "The device is no longer connected."
             case .notAppleDevice:
@@ -62,6 +67,20 @@ nonisolated enum USBCPort {
                 "This Mac reports no connection on the device’s USB-C port. Reconnect the cable and try again."
             case .underTest:
                 UnderTest.refusal
+            }
+        }
+
+        /// The tooltip of a dimmed Restart or Enter DFU; `message` is in the
+        /// note under the buttons.
+        var shortReason: String {
+            switch self {
+            case .intelMac: "Needs a Mac with Apple silicon"
+            case .rosetta: "Unavailable while the app runs under Rosetta"
+            case .deviceGone: "The device is no longer connected"
+            case .notAppleDevice: "Not an iPhone, iPad or Mac"
+            case .throughHub, .portUnknown: "Connect the device directly to the Mac"
+            case .portNotActive: "No connection on this port: reconnect the cable"
+            case .underTest: "Unavailable under tests"
             }
         }
     }
@@ -91,26 +110,24 @@ nonisolated enum USBCPort {
     }
 
     /// No chain is longer than this; a loop in a bad snapshot ends here.
-    private static let maxDepth = 64
+    static let maxDepth = 64
 
     /// Follows the chain from the device's registry entry to its port controller.
-    static func locate(deviceEntryID: UInt64, in registry: some USBCPortRegistry, isAppleSilicon: Bool) -> Check {
+    /// - Parameter isTranslated: the app runs under Rosetta.
+    static func locate(deviceEntryID: UInt64, in registry: some USBCPortRegistry, isAppleSilicon: Bool,
+                       isTranslated: Bool = false) -> Check {
         guard isAppleSilicon else { return .failure(.intelMac) }
+        guard !isTranslated else { return .failure(.rosetta) }
         guard let device = registry.entry(id: deviceEntryID) else { return .failure(.deviceGone) }
         guard device.conforms(to: Key.usbDeviceClass),
               device.integer(Key.vendorID) == USBDeviceMonitor.appleVendorID,
               let productID = device.integer(Key.productID), isAppleDeviceProduct(productID)
         else { return .failure(.notAppleDevice) }
 
-        // Directly on a root port: no other USB device (a hub) anywhere above it.
-        guard let rootPort = registry.parent(of: device) else { return .failure(.portUnknown) }
-        var ancestor: USBCPortRegistryEntry? = rootPort
-        for _ in 0..<maxDepth {
-            guard let current = ancestor else { break }
-            if current.conforms(to: Key.usbDeviceClass) { return .failure(.throughHub) }
-            ancestor = registry.parent(of: current)
-        }
-        guard ancestor == nil else { return .failure(.portUnknown) }
+        // Directly on a root port: no other USB device (a hub) anywhere above
+        // it, proven all the way up to the registry's root.
+        guard let above = registry.ancestors(of: device), let rootPort = above.first else { return .failure(.portUnknown) }
+        if above.contains(where: { $0.conforms(to: Key.usbDeviceClass) }) { return .failure(.throughHub) }
 
         // The root port names its physical port.
         guard let path = rootPort.string(Key.usbIOPort), !path.isEmpty,
@@ -122,12 +139,7 @@ nonisolated enum USBCPort {
         guard port.bool(Key.connectionActive) == true else { return .failure(.portNotActive) }
 
         // The port's own controller, one of the AppleHPM services, exactly once.
-        var controller = registry.parent(of: port)
-        for _ in 0..<maxDepth {
-            guard let current = controller, !current.conforms(to: Key.hpmClass) else { break }
-            controller = registry.parent(of: current)
-        }
-        guard let controller, controller.conforms(to: Key.hpmClass),
+        guard let controller = registry.ancestors(of: port)?.first(where: { $0.conforms(to: Key.hpmClass) }),
               registry.controllerIDs().filter({ $0 == controller.id }).count == 1,
               let rid = controller.integer(Key.rid), let rid32 = Int32(exactly: rid)
         else { return .failure(.portUnknown) }
@@ -135,10 +147,15 @@ nonisolated enum USBCPort {
     }
 
     /// True on Apple silicon, also for an Intel build under Rosetta.
-    static var isAppleSilicon: Bool {
+    static var isAppleSilicon: Bool { sysctlFlag("hw.optional.arm64") }
+
+    /// True while this process runs under Rosetta.
+    static var isTranslated: Bool { sysctlFlag("sysctl.proc_translated") }
+
+    private static func sysctlFlag(_ name: String) -> Bool {
         var value: Int32 = 0
         var size = MemoryLayout<Int32>.size
-        return sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 && value == 1
+        return sysctlbyname(name, &value, &size, nil, 0) == 0 && value == 1
     }
 }
 
@@ -186,8 +203,10 @@ nonisolated protocol USBCPortRegistry {
     func entry(id: UInt64) -> USBCPortRegistryEntry?
     /// The entry at an IORegistry path such as `IOService:/…/Port-USB-C@2`.
     func entry(path: String) -> USBCPortRegistryEntry?
-    /// The parent in the IOService plane.
-    func parent(of entry: USBCPortRegistryEntry) -> USBCPortRegistryEntry?
+    /// Every entry above this one in the IOService plane, nearest first,
+    /// ending at the registry's root; nil when the walk can't reach the root
+    /// (a parent that can't be read, a loop), so nothing above is proven.
+    func ancestors(of entry: USBCPortRegistryEntry) -> [USBCPortRegistryEntry]?
     /// The entry IDs of every AppleHPM service.
     func controllerIDs() -> [UInt64]
 }
@@ -209,14 +228,44 @@ nonisolated struct LiveUSBCPortRegistry: USBCPortRegistry {
         Self.read(IORegistryEntryFromPath(kIOMainPortDefault, path))
     }
 
-    func parent(of entry: USBCPortRegistryEntry) -> USBCPortRegistryEntry? {
+    /// Walks the live entries with `IORegistryEntryGetParentEntry`, never
+    /// looking an entry up again by ID, and checks the walk ends at the root.
+    func ancestors(of entry: USBCPortRegistryEntry) -> [USBCPortRegistryEntry]? {
         guard let matching = IORegistryEntryIDMatching(entry.id) else { return nil }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard service != 0 else { return nil }
-        defer { IOObjectRelease(service) }
-        var parent: io_registry_entry_t = 0
-        guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
-        return Self.read(parent)
+        var current = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        guard current != 0 else { return nil }
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        defer { IOObjectRelease(root) }
+        var rootID: UInt64 = 0
+        guard root != 0, IORegistryEntryGetRegistryEntryID(root, &rootID) == KERN_SUCCESS else {
+            IOObjectRelease(current)
+            return nil
+        }
+        var chain: [USBCPortRegistryEntry] = []
+        for _ in 0..<USBCPort.maxDepth {
+            var parent: io_registry_entry_t = 0
+            let result = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+            IOObjectRelease(current)
+            guard result == KERN_SUCCESS, parent != 0 else { return nil }
+            var parentID: UInt64 = 0
+            guard IORegistryEntryGetRegistryEntryID(parent, &parentID) == KERN_SUCCESS else {
+                IOObjectRelease(parent)
+                return nil
+            }
+            if parentID == rootID {
+                IOObjectRelease(parent)
+                return chain
+            }
+            IOObjectRetain(parent)
+            guard let read = Self.read(parent) else {
+                IOObjectRelease(parent)
+                return nil
+            }
+            chain.append(read)
+            current = parent
+        }
+        IOObjectRelease(current)
+        return nil
     }
 
     func controllerIDs() -> [UInt64] {

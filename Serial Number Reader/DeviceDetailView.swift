@@ -29,6 +29,10 @@ struct DeviceDetailView: View {
     @State private var showingRevive = false
     /// The asset tag editor is open: Remove from List waits (⌘⌫ also deletes text).
     @State private var editingAssetTag = false
+    /// Why Restart and Enter DFU can't reach this device: its own USB-C port
+    /// can't be found (a hub, a dock, an Intel Mac); nil when they can.
+    /// Read by the timer in `body`, never while drawing; refused until read.
+    @State private var portRefusal: USBCPort.Refusal? = .portUnknown
 
     var body: some View {
         Form {
@@ -70,10 +74,14 @@ struct DeviceDetailView: View {
         }
         // The Device menu: the same actions, on the same conditions.
         .focusedSceneValue(\.deviceActions, menuActions)
-        // Waiting for the device can take minutes: VoiceOver hears how it ended.
-        .onChange(of: actions.waitingForReturn) { old, new in
-            guard old != nil, new == nil else { return }
-            AccessibilityNotification.Announcement(actions.lastError ?? actions.lastNote ?? "The device is back.").post()
+        // Which USB-C port the device is on, read again every few seconds:
+        // a port that reported no connection a moment ago may now (the
+        // check runs again before the password, and again as root).
+        .task(id: device.id) {
+            while !Task.isCancelled {
+                portRefusal = device.isConnected ? actions.portRefusal(for: device) : nil
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
     }
 
@@ -190,7 +198,7 @@ struct DeviceDetailView: View {
                     Label("Restart", systemImage: "restart")
                 }
                 .disabled(!can.restart)
-                .help(portRefusal?.message
+                .help(portRefusal?.shortReason
                       ?? "Force-restart over this device’s USB-C port — requires an administrator password")
 
                 if offers.enterDFU {
@@ -200,7 +208,7 @@ struct DeviceDetailView: View {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
                     .disabled(!can.enterDFU)
-                    .help(portRefusal?.message
+                    .help(portRefusal?.shortReason
                           ?? "Reboot into DFU mode over this device’s USB-C port — requires an administrator password")
                 }
 
@@ -241,23 +249,12 @@ struct DeviceDetailView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let waiting = actions.waitingForReturn {
-                Text(waiting == .dfu ? "Waiting for the device to come back in DFU mode…"
-                                     : "Waiting for the device to come back…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let note = actions.lastNote {
-                TintedLabel(note, systemImage: "info.circle", tint: .blue)
-                    .font(.caption)
-            }
-
             if actions.trustRequiredDeviceID == device.id {
                 trustGuidance
             }
 
-            if device.modelInfo?.isMac == true {
+            // Where DFU mode is reached from (in DFU already, it's done).
+            if device.modelInfo?.isMac == true, device.mode == .recovery {
                 macDFUTips
             }
 
@@ -312,11 +309,6 @@ struct DeviceDetailView: View {
         DeviceActionAvailability.restoreUnavailableReason(device: device, configuratorAvailable: actions.isConfiguratorAvailable)
     }
 
-    /// Why Restart and Enter DFU can't reach this device: its own USB-C port
-    /// can't be found (a hub, a dock, an Intel Mac); nil when they can.
-    private var portRefusal: USBCPort.Refusal? {
-        device.isConnected ? actions.portRefusal(for: device) : nil
-    }
 
     /// Short: each button's help says the rest.
     private var actionsFooterText: String {

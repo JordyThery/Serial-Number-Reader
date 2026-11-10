@@ -12,10 +12,13 @@
   the buttons are dimmed with the reason before any password is asked.
 - **Success only once the device is back:** after Restart, Enter DFU and
   Restore, the app waits until the same device appears again in the expected
-  mode, and says clearly when it doesn’t come back. When a device doesn’t
-  confirm Restart or Enter DFU, the app watches for it for 30 seconds before
-  reporting a problem.
-- **Mac DFU tips:** for a Mac, the Actions section explains that DFU mode
+  mode, and says clearly when it doesn’t come back. After Restart and Enter
+  DFU, a bar above the details names the device, says how long the app waits,
+  and has a Stop Waiting button; other devices can be used meanwhile. A
+  restarted iPhone or iPad that stays locked shows “Sent; unlock the device to
+  see it again” instead of an error. When a device doesn’t confirm Restart or
+  Enter DFU, the app watches for it for 30 seconds before reporting a problem.
+- **Mac DFU tips:** for a Mac in Recovery, the Actions section explains that DFU mode
   works through the Mac’s DFU port, with a link to Apple’s page that shows
   where it is, and to click Allow when your Mac asks to allow the accessory
   to connect.
@@ -24,8 +27,8 @@
 
 ### Changed
 
-- Restart and Enter DFU are unavailable on an Intel Mac, with the reason
-  shown, instead of asking for a password first.
+- Restart and Enter DFU are unavailable on an Intel Mac and while the app runs
+  under Rosetta, with the reason shown, instead of asking for a password first.
 - **Export for Bug Report…** in the activity log also masks Apple’s order
   number and the reseller’s ID.
 - A device management service added in Apple Business or Apple School

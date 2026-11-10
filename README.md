@@ -34,7 +34,7 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 ## Requirements
 
 - macOS 14 or later.
-- USB-C power actions (Restart / Enter DFU) require a Mac with Apple silicon (they’re unavailable on an Intel Mac) and a USB-C target device connected **directly** to a USB-C port of the Mac, and prompt for an administrator password. The command goes only to the selected device’s own port, so other devices, chargers and displays on other ports don’t matter; a device behind a hub, dock or adapter is refused, because the command would reach the hub instead. Before asking for the password, the app checks which port the device is on and dims the buttons with the reason when it can’t tell.
+- USB-C power actions (Restart / Enter DFU) require a Mac with Apple silicon (they’re unavailable on an Intel Mac, and while the app runs under Rosetta) and a USB-C target device connected **directly** to a USB-C port of the Mac, and prompt for an administrator password. The command goes only to the selected device’s own port, so other devices, chargers and displays on other ports don’t matter; a device behind a hub, dock or adapter is refused, because the command would reach the hub instead. Before asking for the password, the app checks which port the device is on and dims the buttons with the reason when it can’t tell.
 - Restore, Revive, Remove Trust and DFU identification require [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344) (free). Serial Number Reader uses its command-line tool; no setup is needed.
 
 ## Installation
@@ -53,7 +53,7 @@ Connect a device over USB. It appears in the sidebar with its mode; select it to
 
 Enter Recovery, Boot to Normal, Restore and Revive need no administrator password; Restart and Enter DFU use USB-C power delivery and prompt for one. Before asking, the app checks that its own app on disk is the signed one that is running. Only one action runs at a time, and none while a Restore or Revive runs.
 
-After Restart, Enter DFU and Restore the app waits until the same device (by its ECID) appears again in the expected mode, and only then reports success; when the device doesn’t come back, it says so. A restarted iPhone or iPad appears again only once it’s unlocked, and a Mac that starts up normally doesn’t appear on USB at all.
+After Restart, Enter DFU and Restore the app waits until the same device (by its ECID) appears again in the expected mode, and only then reports success; when the device doesn’t come back, it says so. After Restart and Enter DFU a bar above the device details names the device and says how long the app waits, with **Stop Waiting**; other devices can be used meanwhile. A restarted iPhone or iPad appears again only once it’s unlocked, and a Mac that starts up normally doesn’t appear on USB at all: the app then says the command was sent and to unlock the device to see it again.
 
 > **Mac DFU:** connect the cable to the Mac’s DFU port, which depends on the model ([How to identify the DFU port on Mac](https://support.apple.com/120694)), leave its other USB ports empty except for power, and click **Allow** if your Mac asks to allow the accessory to connect.
 

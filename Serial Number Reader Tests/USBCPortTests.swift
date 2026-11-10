@@ -9,10 +9,24 @@ nonisolated final class FakePortRegistry: USBCPortRegistry, @unchecked Sendable 
     var parents: [UInt64: UInt64] = [:]
     var paths: [String: UInt64] = [:]
     var controllers: [UInt64] = []
+    /// The registry's root: a walk up must end here.
+    var roots: Set<UInt64> = [1]
 
     func entry(id: UInt64) -> USBCPortRegistryEntry? { entries[id] }
     func entry(path: String) -> USBCPortRegistryEntry? { paths[path].flatMap { entries[$0] } }
-    func parent(of entry: USBCPortRegistryEntry) -> USBCPortRegistryEntry? { parents[entry.id].flatMap { entries[$0] } }
+    /// As the live registry: nearest first, the root left out; nil unless the walk reaches the root.
+    func ancestors(of entry: USBCPortRegistryEntry) -> [USBCPortRegistryEntry]? {
+        var chain: [USBCPortRegistryEntry] = []
+        var current = entry.id
+        for _ in 0..<USBCPort.maxDepth {
+            guard let parentID = parents[current] else { return nil }
+            if roots.contains(parentID) { return chain }
+            guard let parent = entries[parentID] else { return nil }
+            chain.append(parent)
+            current = parentID
+        }
+        return nil
+    }
     func controllerIDs() -> [UInt64] { controllers }
 
     func add(_ id: UInt64, parent: UInt64?, classes: Set<String> = [], _ properties: [String: USBCPortRegistryEntry.Value] = [:]) {
@@ -213,6 +227,29 @@ struct USBCPortTests {
         #expect(locate(registry) == .failure(.portUnknown))
     }
 
+    @Test("A parent that can't be read ends in a refusal: no hub is proven above it")
+    func unreadableParent() {
+        let registry = FakePortRegistry.mac()
+        registry.entries[210] = nil          // the USB controller above the root port
+        #expect(locate(registry) == .failure(.portUnknown))
+        let noRoot = FakePortRegistry.mac()
+        noRoot.roots = []                    // the walk never reaches the registry's root
+        #expect(locate(noRoot) == .failure(.portUnknown))
+    }
+
+    @Test("Under Rosetta it's refused; each refusal has a short reason for the tooltip")
+    func rosettaAndShortReasons() {
+        #expect(USBCPort.locate(deviceEntryID: FakePortRegistry.deviceID, in: FakePortRegistry.mac(),
+                                isAppleSilicon: true, isTranslated: true) == .failure(.rosetta))
+        #expect(USBCPort.Refusal.throughHub.shortReason == "Connect the device directly to the Mac")
+        #expect(USBCPort.Refusal.portUnknown.shortReason == "Connect the device directly to the Mac")
+        for refusal in [USBCPort.Refusal.intelMac, .rosetta, .deviceGone, .notAppleDevice, .throughHub, .portUnknown,
+                        .portNotActive, .underTest] {
+            #expect(refusal.shortReason.count <= 60, "\(refusal)")
+            #expect(refusal.message.count > refusal.shortReason.count, "\(refusal)")
+        }
+    }
+
     @Test("A loop in the registry ends in a refusal")
     func loop() {
         let registry = FakePortRegistry.mac()
@@ -227,7 +264,7 @@ struct PrivilegedVDMTests {
 
     @Test("Only the exact forms are accepted")
     func parse() {
-        #expect(PrivilegedVDM.parse(["--vdm", "reboot"]) == .init(action: "reboot", deviceEntryID: nil))
+        #expect(PrivilegedVDM.parse(["--vdm", "reboot"]) == nil)
         #expect(PrivilegedVDM.parse(["--vdm", "dfu", "--entry", "100000aa1"]) == .init(action: "dfu", deviceEntryID: 0x1_0000_0AA1))
         #expect(PrivilegedVDM.parse(["--vdm", "dfu", "--entry", "FFFFFFFFFFFFFFFF"]) == .init(action: "dfu", deviceEntryID: .max))
         for bad in [[], ["--vdm"], ["--vdm", "erase"], ["--vdm", "reboot", "--entry"],
@@ -235,7 +272,8 @@ struct PrivilegedVDMTests {
                     ["--vdm", "reboot", "--entry", "1FFFFFFFFFFFFFFFF"], ["--vdm", "reboot", "--entry", "12;rm"],
                     ["--vdm", "reboot", "--entry", "-1"], ["--vdm", "reboot", "--entry", "+1"],
                     ["--vdm", "reboot", "--entry", "１２"], ["--vdm", "reboot", "--port", "1"],
-                    ["--vdm", "reboot", "--entry", "1", "--extra"], ["reboot", "--vdm"], ["-x", "--vdm", "reboot"]] {
+                    ["--vdm", "reboot", "--entry", "1", "--extra"], ["reboot", "--vdm"], ["-x", "--vdm", "reboot"],
+                    ["--vdm", "dfu"], ["--entry", "1", "--vdm", "dfu"]] {
             #expect(PrivilegedVDM.parse(bad) == nil, "\(bad)")
         }
         let round = PrivilegedVDM.commandArguments(action: "reboot", deviceEntryID: 0x1_0000_0AA1)
@@ -263,7 +301,6 @@ struct PrivilegedVDMTests {
             let code = PrivilegedVDM.run(.init(action: "dfu", deviceEntryID: FakePortRegistry.deviceID),
                                          registry: registry, isAppleSilicon: appleSilicon, underTest: guardOff,
                                          send: { _, _, _ in sent = true; return 0 },
-                                         sendWithoutDevice: { _ in sent = true; return 0 },
                                          error: { messages.append($0) })
             #expect(code == 5)
             #expect(!sent)
@@ -297,18 +334,15 @@ struct PrivilegedVDMTests {
         #expect(recheck?() == false)
     }
 
-    @Test("Without a device, the rule of one connected port applies; under tests nothing runs")
-    func withoutDeviceAndUnderTest() {
-        var withoutDevice: String?
-        #expect(PrivilegedVDM.run(.init(action: "dfu", deviceEntryID: nil), registry: FakePortRegistry.mac(),
-                                  isAppleSilicon: true, underTest: guardOff,
-                                  send: { _, _, _ in 0 }, sendWithoutDevice: { withoutDevice = $0; return 4 },
-                                  error: { _ in }) == 4)
-        #expect(withoutDevice == "dfu")
-        // Intel refuses this form too.
-        #expect(PrivilegedVDM.run(.init(action: "dfu", deviceEntryID: nil), registry: FakePortRegistry.mac(),
-                                  isAppleSilicon: false, underTest: guardOff,
-                                  sendWithoutDevice: { _ in 0 }, error: { _ in }) == 5)
+    @Test("Rosetta is refused before anything is sent; under tests nothing runs")
+    func rosettaAndUnderTest() {
+        var messages: [String] = []
+        var sentUnderRosetta = false
+        #expect(PrivilegedVDM.run(.init(action: "dfu", deviceEntryID: FakePortRegistry.deviceID), registry: FakePortRegistry.mac(),
+                                  isAppleSilicon: true, isTranslated: true, underTest: guardOff,
+                                  send: { _, _, _ in sentUnderRosetta = true; return 0 }, error: { messages.append($0) }) == 5)
+        #expect(!sentUnderRosetta)
+        #expect(messages == [USBCPort.Refusal.rosetta.message])
         // Under tests: refused before anything, and written down (in a log of this test's own).
         let folder = FileManager.default.temporaryDirectory.appending(path: "snr-vdm-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
