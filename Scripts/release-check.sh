@@ -38,10 +38,13 @@ CREDENTIALS=("jamfpro-readonly:jamfPlatform:client-id" "jamfpro-readonly:jamfPla
              "jamfpro-production:jamfPlatform:client-id" "jamfpro-production:jamfPlatform:client-secret")
 APP_FAULTS=(usb-attempt)
 DOMAIN="be.jordythery.serialnumberreader"
-# Saved connections and the one in use, the demo switch, the conversion flag
-# and the settings of versions before connections (only ever read).
+# Saved connections and the one in use (Jamf, and the Apple Business and
+# Apple School Manager accounts), the demo switch, the conversion flag and the
+# settings of versions before connections (only ever read).
 FINGERPRINT_DEFAULTS=()
-for key in jamfConnections jamfConnections.backup activeJamfConnectionID demoMode jamfConnectionsConverted \
+for key in jamfConnections jamfConnections.backup activeJamfConnectionID \
+           appleBusinessConnections appleBusinessConnections.backup activeAppleBusinessConnectionID \
+           demoMode jamfConnectionsConverted \
            jamfAuthMethod jamfServerURL jamfClientID jamfUsername jamfPlatformRegion jamfPlatformClientID \
            jamfPlatformEnvironmentID jamfSchoolURL jamfSchoolNetworkID; do
     FINGERPRINT_DEFAULTS+=("$DOMAIN $key")
@@ -52,7 +55,7 @@ FINGERPRINT_PATHS=("$HOME/Library/Application Support/Serial Number Reader"
                    "$HOME/Library/Application Support/$DOMAIN"
                    "$HOME/Library/Logs/Serial Number Reader"
                    "$HOME/Library/Logs/$DOMAIN")
-KEYCHAIN_PREFIXES=("be.jordythery.SerialNumberReader.jamf")
+KEYCHAIN_PREFIXES=("be.jordythery.SerialNumberReader.jamf" "be.jordythery.SerialNumberReader.appleBusiness")
 
 # --fault usb-attempt sends one Restart through the app's real doorway (the
 # guard refuses it). Restart targets the first port with a device, so this
