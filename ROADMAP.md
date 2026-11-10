@@ -1,0 +1,9 @@
+# Serial Number Reader: roadmap
+
+Ideas for later, not planned yet. Added by Jordy on 2026-11-09, from a comparison with DFUUtility (github.com/thehallifax/DFUUtility, Apache-2.0). Nothing here is decided; each item needs Jordy's go-ahead before work starts. Ask Jordy before copying any of DFUUtility's code (see Credits in CLAUDE.md).
+
+- **Check that the same device came back:** after Enter DFU, Restart and Restore, wait until the device with the same ECID appears again in the expected mode, and only then report success. When the VDM tool reaches the transition but misses the final reply, keep watching for that device for a short time (DFUUtility uses 30 seconds) instead of reporting a failure. Fits the current rules.
+- **Guided DFU for Lightning devices:** a step-by-step guide for the button presses, for devices that can't take the VDM Enter DFU. It watches the USB changes (the device disappearing is the cue for "release now") and checks that the same ECID shows up in DFU. Button timing differs per model, so each model needs testing on real hardware.
+- **Tips in the app:** older Lightning devices on a USB-C to Lightning cable may land in Recovery instead of DFU (USB-A to Lightning through an adapter helped in DFUUtility's tests); Mac DFU works only on a specific port per model (link Apple's DFU-port guidance); approve macOS's "Allow accessory to connect?" prompt during Mac DFU.
+- **Firmware download and library:** download IPSWs from Apple's own firmware lists, resume interrupted downloads, check the checksum, keep them on disk and manage them. Needs Jordy's decision first: it adds Apple's firmware servers to the network rule (today only Jamf, GitHub and ipsw.me).
+- **Several devices one after another:** choose devices and run Restore, Revive or Restart on them in sequence, each targeted by its own ECID, with "Stop after current device". Needs Jordy's decision first: it changes the rule of one restore at a time.
