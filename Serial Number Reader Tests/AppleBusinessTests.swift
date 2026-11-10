@@ -646,6 +646,105 @@ struct AppleBusinessTests {
         #expect(rig.api.filter { $0.path == "/v1/orgDevices/\(Self.serial)" }.count == before + 1)
     }
 
+    // MARK: Review: more cases
+
+    @Test("Deleting the Apple account in use: the next one takes over; with none left the section goes")
+    func deletingTheAccountInUse() async throws {
+        let rig = try makeRig()
+        let connections = rig.store.connections
+        let first = try #require(connections.activeAppleConnection)
+        let second = AppleBusinessConnection(name: "Second Org", service: .appleSchoolManager, signIn: .applePrivateKey,
+                                             clientID: Self.clientID, keyID: Self.keyID)
+        try connections.connections.save(.apple(second), secrets: [.main: rig.pem])
+
+        try connections.connections.delete(id: first.id)
+        connections.connectionWasDeleted()
+        #expect(connections.activeAppleID == second.id)
+        #expect(rig.secrets.secret(for: first.id.uuidString) == nil)
+
+        try connections.connections.delete(id: second.id)
+        connections.connectionWasDeleted()
+        #expect(connections.activeAppleID == nil)
+        for _ in 0..<100 where rig.store.isConfigured { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!rig.store.isConfigured)
+        #expect(rig.store.state(forSerial: Self.serial) == .notConfigured)
+    }
+
+    @Test("A role's ID pointing at the other kind gives no connection in use")
+    func rolesDontCross() throws {
+        let rig = try makeRig()
+        let connections = rig.store.connections
+        let apple = try #require(connections.activeAppleConnection)
+        let jamf = JamfConnection(name: "Lab Jamf", service: .jamfPro, signIn: .apiClient,
+                                  serverURL: "https://example.jamfcloud.com", clientID: "c")
+        try connections.connections.save(.jamf(jamf), secrets: [.main: "s"])
+        connections.activeID = apple.id
+        #expect(connections.activeConnection == nil)
+        connections.activeAppleID = jamf.id
+        #expect(connections.activeAppleConnection == nil)
+    }
+
+    @Test("Under the live-check switch each release-check connection goes to its own list")
+    func liveRecordsByService() {
+        let apple = AppConnection.live(Connection(name: "Org", service: .appleSchoolManager, clientID: "c", keyID: "k"))
+        #expect(apple.apple?.service == .appleSchoolManager && apple.jamf == nil)
+        let jamf = AppConnection.live(Connection(name: "Pro", service: .jamfPlatform, signIn: .apiClient))
+        #expect(jamf.jamf?.service == .jamfPlatform && jamf.apple == nil)
+    }
+
+    @Test("A serial number with other characters than letters and digits sends nothing")
+    func oddSerialSendsNothing() async throws {
+        let rig = try makeRig()
+        #expect(await finished(rig.store, "ABC/../X") == .notInOrganization)
+        #expect(await finished(rig.store, "ABC?X=1") == .notInOrganization)
+        #expect(rig.api.isEmpty)
+    }
+
+    @Test("A device management service name starting with = can't become a formula in the CSV")
+    func serviceNameIsNoFormula() throws {
+        var row = SessionExport.Row()
+        row.appleBusinessMDMServer = "=HYPERLINK(\"x\")"
+        let csv = SessionExport.csv([row])
+        #expect(csv.contains(#""'=HYPERLINK(""x"")""#))
+        #expect(!csv.contains(",=HYPERLINK"))
+    }
+
+    @Test("Saving an Apple account keeps a Jamf connection saved without https:// readable, in the same format")
+    func jamfAddressWithoutScheme() throws {
+        let settings = TemporaryDefaults("applebusiness-scheme")
+        defer { settings.remove() }
+        let old = JamfConnection(name: "Old", service: .jamfPro, signIn: .apiClient,
+                                 serverURL: "example.jamfcloud.com", clientID: "c")
+        settings.defaults.set(try JSONEncoder().encode([old]), forKey: AppConnectionStore.listKey)
+        let store = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let apple = AppleBusinessConnection(name: "Org", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                            clientID: Self.clientID, keyID: Self.keyID)
+        try store.connections.save(.apple(apple), secrets: [.main: "PEM-PLACEHOLDER"])
+        let list = try #require(settings.defaults.data(forKey: AppConnectionStore.listKey))
+        let saved = try JSONDecoder().decode([JamfConnection].self, from: list)
+        #expect(saved.map(\.id) == [old.id])
+        #expect(saved.first?.serverURL.hasSuffix("example.jamfcloud.com") == true)
+        #expect(saved.first?.clientID == "c")
+    }
+
+    @Test("An unreadable Apple list is never overwritten: a copy is kept and saving is refused")
+    func unreadableAppleList() throws {
+        let settings = TemporaryDefaults("applebusiness-unreadable")
+        defer { settings.remove() }
+        let jamf = JamfConnection(name: "Lab Jamf", service: .jamfPro, signIn: .apiClient,
+                                  serverURL: "https://example.jamfcloud.com", clientID: "c")
+        let jamfList = try JSONEncoder().encode([jamf])
+        settings.defaults.set(jamfList, forKey: AppConnectionStore.listKey)
+        let garbage = Data("not json".utf8)
+        settings.defaults.set(garbage, forKey: AppConnectionStore.appleListKey)
+        let store = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        #expect(store.connections.problem != nil)
+        #expect(throws: (any Error).self) { try store.connections.save(.jamf(jamf), secrets: [.main: "s"]) }
+        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == garbage)
+        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == jamfList)
+        #expect(settings.defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppConnectionStore.appleListKey + ".unreadable") })
+    }
+
     // MARK: Test Connection, secrets, export
 
     @Test("Test Connection signs in with the typed private key and counts the device management services")
