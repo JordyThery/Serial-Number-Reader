@@ -14,25 +14,15 @@ enum AppDemo {
     /// nothing (JTKit).
     private static var defaults: UserDefaults {
         guard TestRun.isUnitTestHost else { return .standard }
-        return JamfConnectionStore.emptiedDefaults(domain: JamfConnectionStore.unitTestHostDomain)
+        return AppConnectionStore.emptiedDefaults(domain: AppConnectionStore.unitTestHostDomain)
     }
 
-    /// The saved connections for this launch: in a sandbox run (`-JTKitSandbox
-    /// YES`, UI tests) an empty list in memory and no Keychain, so the real
-    /// ones are never read or written.
-    static func connections() -> JamfConnectionStore {
+    /// The saved connections for this launch, shared by the Jamf and Apple
+    /// lookups: in a sandbox run (`-JTKitSandbox YES`, UI tests) an empty list
+    /// in memory and no Keychain, so the real ones are never read or written.
+    static let connections: AppConnectionStore = {
         if TestRun.isUnitTestHost { return .forUnitTestHost() }
-        if DemoMode.isSandboxLaunch { return JamfConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore()) }
-        return JamfConnectionStore()
-    }
-
-    /// The saved Apple Business and School Manager accounts for this launch,
-    /// kept as safe as `connections()`.
-    static func appleBusinessConnections() -> AppleBusinessConnectionStore {
-        if TestRun.isUnitTestHost { return .forUnitTestHost() }
-        if DemoMode.isSandboxLaunch {
-            return AppleBusinessConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
-        }
-        return AppleBusinessConnectionStore()
-    }
+        if DemoMode.isSandboxLaunch { return AppConnectionStore(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore()) }
+        return AppConnectionStore()
+    }()
 }

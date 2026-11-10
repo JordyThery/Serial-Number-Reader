@@ -113,8 +113,21 @@ struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 @Bindable var connections = jamf.connections
                 ConnectionPicker(store: connections.connections,
-                                 role: jamf.connectionRole(selection: $connections.activeID)) {
+                                 role: jamf.connectionRole(selection: $connections.activeID),
+                                 help: "The Jamf connection in use") {
                     DemoModeSwitch(actions: actions, restore: restore)
+                }
+            }
+            // Hidden until an Apple account is saved (or in demo mode): the
+            // lookup is optional, and an empty picker is unexplained chrome.
+            if !jamf.connections.appleConnections.isEmpty || appleBusiness.isDemo {
+                ToolbarItem(placement: .navigation) {
+                    @Bindable var connections = jamf.connections
+                    ConnectionPicker(store: connections.connections,
+                                     role: appleBusiness.connectionRole(selection: $connections.activeAppleID),
+                                     help: "The Apple Business or Apple School Manager account in use") {
+                        DemoModeSwitch(actions: actions, restore: restore)
+                    }
                 }
             }
         }

@@ -46,7 +46,7 @@ final class ConnectionConversionTests {
     }
 
     private func makeStore() -> ConnectionStore<JamfConnection> {
-        ConnectionStore(storage: UserDefaultsConnectionStorage(key: JamfConnectionStore.listKey, defaults: defaults),
+        ConnectionStore(storage: UserDefaultsConnectionStorage(key: AppConnectionStore.listKey, defaults: defaults),
                         secrets: [.main: SecretLocation(store: secrets)])
     }
 
@@ -174,9 +174,9 @@ final class ConnectionConversionTests {
     @Test("The app saves the converted active connection")
     func appSavesActiveConnection() {
         fillInEverything(inUse: .jamfSchool)
-        let app = JamfConnectionStore(defaults: defaults, secrets: secrets)
+        let app = AppConnectionStore(defaults: defaults, secrets: secrets)
         #expect(app.activeID == Method.jamfSchool.connectionID)
-        #expect(defaults.string(forKey: JamfConnectionStore.activeKey) == Method.jamfSchool.connectionID.uuidString)
+        #expect(defaults.string(forKey: AppConnectionStore.activeKey) == Method.jamfSchool.connectionID.uuidString)
     }
 
     @Test("With nothing filled in, nothing is created and the marker is set")
@@ -184,7 +184,7 @@ final class ConnectionConversionTests {
         let store = makeStore()
         #expect(run(into: store) == .converted(added: 0, activeID: nil))
         #expect(store.records.isEmpty)
-        #expect(defaults.object(forKey: JamfConnectionStore.listKey) == nil)
+        #expect(defaults.object(forKey: AppConnectionStore.listKey) == nil)
         #expect(defaults.bool(forKey: LegacySettingsConversion.markerKey))
     }
 
@@ -194,7 +194,7 @@ final class ConnectionConversionTests {
     func runningTwice() throws {
         fillInEverything()
         #expect(run() == .converted(added: 4, activeID: Method.platform.connectionID))
-        let listAfterFirst = defaults.data(forKey: JamfConnectionStore.listKey)
+        let listAfterFirst = defaults.data(forKey: AppConnectionStore.listKey)
         let secretsAfterFirst = secrets.all
 
         // the old settings change afterwards, e.g. in an older build
@@ -204,7 +204,7 @@ final class ConnectionConversionTests {
         let store = makeStore()
         #expect(run(into: store) == .alreadyDone)
         #expect(store.records.count == 4)
-        #expect(defaults.data(forKey: JamfConnectionStore.listKey) == listAfterFirst)
+        #expect(defaults.data(forKey: AppConnectionStore.listKey) == listAfterFirst)
         #expect((try secrets.readSecret(for: Method.clientCredentials.connectionID.uuidString))
                 == secretsAfterFirst[Method.clientCredentials.connectionID.uuidString])
     }
@@ -212,10 +212,10 @@ final class ConnectionConversionTests {
     @Test("Relaunching the app twice keeps one copy of each connection and the user's choice")
     func relaunchingTheApp() {
         fillInEverything()
-        let first = JamfConnectionStore(defaults: defaults, secrets: secrets)
+        let first = AppConnectionStore(defaults: defaults, secrets: secrets)
         first.activeID = Method.basic.connectionID
 
-        let second = JamfConnectionStore(defaults: defaults, secrets: secrets)
+        let second = AppConnectionStore(defaults: defaults, secrets: secrets)
         #expect(second.connections.records.count == 4)
         #expect(second.activeID == Method.basic.connectionID)
     }
@@ -253,11 +253,11 @@ final class ConnectionConversionTests {
         let own = JamfConnection(name: "Added by hand", service: .jamfSchool, signIn: .schoolAPIKey)
         try store.save(own)
         defaults.removeObject(forKey: LegacySettingsConversion.markerKey)
-        let listBefore = defaults.data(forKey: JamfConnectionStore.listKey)
+        let listBefore = defaults.data(forKey: AppConnectionStore.listKey)
 
         #expect(run(into: store) == .skippedExistingList)
         #expect(store.records == [own])
-        #expect(defaults.data(forKey: JamfConnectionStore.listKey) == listBefore)
+        #expect(defaults.data(forKey: AppConnectionStore.listKey) == listBefore)
         #expect(defaults.bool(forKey: LegacySettingsConversion.markerKey))
     }
 
@@ -306,14 +306,14 @@ final class ConnectionConversionTests {
     func unreadableList() {
         fillInEverything()
         let garbage = Data("not json".utf8)
-        defaults.set(garbage, forKey: JamfConnectionStore.listKey)
+        defaults.set(garbage, forKey: AppConnectionStore.listKey)
         let store = makeStore()
 
         guard case .failed = run(into: store) else {
             Issue.record("expected the conversion to fail")
             return
         }
-        #expect(defaults.data(forKey: JamfConnectionStore.listKey) == garbage)
+        #expect(defaults.data(forKey: AppConnectionStore.listKey) == garbage)
         #expect(defaults.object(forKey: LegacySettingsConversion.markerKey) == nil)
     }
 
@@ -323,7 +323,7 @@ final class ConnectionConversionTests {
     func oldSettingsUntouched() {
         fillInEverything()
         let before = oldSettings()
-        let app = JamfConnectionStore(defaults: defaults, secrets: secrets)
+        let app = AppConnectionStore(defaults: defaults, secrets: secrets)
 
         // using the new list doesn't write to the old settings either
         if let record = app.connections.records.first {

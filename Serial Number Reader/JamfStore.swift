@@ -48,7 +48,7 @@ nonisolated extension JamfLookupState {
 @Observable
 final class JamfStore {
 
-    let connections: JamfConnectionStore
+    let connections: AppConnectionStore
     /// JTKit's activity log (Window › Activity Log), filled by every request.
     let activityLog: ActivityLog
 
@@ -87,9 +87,9 @@ final class JamfStore {
     ///   - session: sends the requests; a fake server in tests.
     ///   - activityLog: where requests are recorded; a new log by default.
     ///   - demo: the app's demo mode; nil without demo mode.
-    init(connections: JamfConnectionStore? = nil, activityLog: ActivityLog? = nil,
+    init(connections: AppConnectionStore? = nil, activityLog: ActivityLog? = nil,
          session: URLSession = JamfStore.session, demo: DemoMode? = nil) {
-        let connections = connections ?? JamfConnectionStore()
+        let connections = connections ?? AppConnectionStore()
         self.connections = connections
         self.activityLog = activityLog ?? ActivityLog()
         // Under tests the saved connections are never reached: every request
@@ -103,10 +103,12 @@ final class JamfStore {
         observeConnections()
     }
 
-    /// The picker's, the Connection menu's and Settings' role: the saved
-    /// connection in use, or in demo mode the demo connections.
+    /// The picker's, the Connection menu's and Settings' Jamf role: the
+    /// saved Jamf connection in use (Jamf services only), or in demo mode the
+    /// demo connections.
     func connectionRole(selection: Binding<UUID?>) -> ConnectionRole {
-        .active(selection: selection, demo: demoChoice)
+        ConnectionRole("Jamf", useTitle: "Use This Connection", selection: selection,
+                       services: AppConnection.jamfServices, demo: demoChoice)
     }
 
     /// The demo connection in use while demo mode is on, else nil.

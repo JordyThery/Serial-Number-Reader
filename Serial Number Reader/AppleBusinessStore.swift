@@ -2,6 +2,7 @@ import Foundation
 import JTKit
 import Observation
 import os
+import SwiftUI
 
 /// What Apple Business or Apple School Manager knows about one device.
 nonisolated struct AppleBusinessRecord: Equatable, Sendable {
@@ -29,16 +30,19 @@ nonisolated enum AppleBusinessLookupState: Equatable, Sendable {
 
 /// Owns the active Apple Business or Apple School Manager client and the
 /// per-serial lookup results, like `JamfStore` does for Jamf. The feature is
-/// optional: without a saved account the detail view shows nothing.
+/// optional: without a saved Apple account the app never contacts Apple and
+/// the detail view shows nothing.
 ///
-/// In demo mode the account is JTKit's "Contoso (Demo)" organization,
-/// answered inside the app; the saved accounts are never used. Test
-/// Connection always uses the real account and the real network.
+/// In demo mode the account is JTKit's demo organization "Contoso (Demo)"
+/// in Apple Business, answered inside the app; the saved accounts are never
+/// used.
+/// Test Connection always uses the real account and the real network.
 @MainActor
 @Observable
 final class AppleBusinessStore {
 
-    let connections: AppleBusinessConnectionStore
+    /// The saved connections, shared with `JamfStore`; this store uses the Apple accounts.
+    let connections: AppConnectionStore
     /// JTKit's activity log (Window › Activity Log), filled by every request.
     let activityLog: ActivityLog
 
@@ -58,7 +62,8 @@ final class AppleBusinessStore {
         let privateKey: String
     }
 
-    @ObservationIgnored private let demo: DemoMode?
+    /// Demo mode's organizations; nil without demo mode.
+    let demoChoice: DemoConnectionChoice?
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private var client: ABM.Client?
     @ObservationIgnored private var clientKey: String?
@@ -68,49 +73,68 @@ final class AppleBusinessStore {
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "AppleBusinessStore")
 
     /// - Parameters:
-    ///   - connections: the saved accounts; the app's own by default.
+    ///   - connections: the saved connections; the app's own by default.
     ///   - activityLog: where requests are recorded; a new log by default.
     ///   - session: sends the requests; a fake server in tests.
     ///   - demo: the app's demo mode; nil without demo mode.
-    init(connections: AppleBusinessConnectionStore? = nil, activityLog: ActivityLog? = nil,
-         session: URLSession = JamfStore.session, demo: DemoMode? = nil) {
-        let connections = connections ?? AppleBusinessConnectionStore()
+    ///   - underTestLog: where a refused request for a saved account is
+    ///     written down under tests; the release check's file by default.
+    init(connections: AppConnectionStore? = nil, activityLog: ActivityLog? = nil,
+         session: URLSession = JamfStore.session, demo: DemoMode? = nil,
+         underTestLog: TestRun.AttemptLog = .savedConnections) {
+        let connections = connections ?? AppConnectionStore()
         self.connections = connections
         self.activityLog = activityLog ?? ActivityLog()
-        self.demo = demo
         // Under tests the saved accounts are never reached: every request
-        // for them is refused and written down (demo requests are unaffected).
+        // for them, sign-in and Test Connection included, is refused and
+        // written down (demo requests are unaffected).
         self.session = TestRun.isActive && connections.holdsSavedConnections
-            ? TestRun.refusingSession(log: .savedConnections, message: UnderTest.refusal) : session
+            ? TestRun.refusingSession(log: underTestLog, message: UnderTest.refusal) : session
+        // Apple Business only: JTKit's demo Apple School Manager shares its
+        // name with the demo Jamf School ("Contoso Academy (Demo)").
+        demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoAppleBusiness]) }
         (configuration, connectionProblem) = activeSetup()
+        demoConnectionID = demoConnection?.id
         observeConnections()
     }
 
-    /// The saved account in use, or in demo mode the demo organization.
-    var isDemo: Bool { demo?.isOn == true }
+    /// The picker's, the Connection menu's and Settings' Apple role: the
+    /// Apple account in use (Apple Business and Apple School Manager only),
+    /// or in demo mode the demo organizations.
+    func connectionRole(selection: Binding<UUID?>) -> ConnectionRole {
+        ConnectionRole("Apple", useTitle: "Use This Account", selection: selection,
+                       services: AppConnection.appleServices, demo: demoChoice)
+    }
+
+    /// The demo organization in use while demo mode is on, else nil.
+    var demoConnection: Connection? {
+        guard let demoChoice, demoChoice.isActive else { return nil }
+        return demoChoice.selected
+    }
+
+    var isDemo: Bool { demoConnection != nil }
 
     /// Whether the section is shown at all: an account is in use (or the
     /// problem with it is). Demo mode always has one.
     var isConfigured: Bool { isDemo || configuration != nil || connectionProblem != nil }
 
-    /// "Apple Business" or "Apple School Manager", for the section title.
-    var productName: String {
-        if isDemo { return ABM.Service.business.label }
-        return connections.activeConnection.flatMap { ABM.Service($0.service) }?.label ?? ABM.Service.business.label
+    /// The service of the account in use, or in demo mode of the demo organization.
+    private var service: ABM.Service {
+        (demoConnection?.service ?? connections.activeAppleConnection?.service).flatMap(ABM.Service.init) ?? .business
     }
 
-    /// The web portal of the account in use, for "Open in Apple Business
-    /// Manager" / "Open in Apple School Manager"; nil in demo mode (the demo
-    /// organization has no web pages) and without an account. Apple documents
-    /// no address for a single device, so the link opens the portal itself.
+    /// "Apple Business" or "Apple School Manager", for the section title,
+    /// the link and messages.
+    var productName: String { service.label }
+
+    /// The web portal of the account in use, for "Open in Apple Business" /
+    /// "Open in Apple School Manager"; nil in demo mode (the demo
+    /// organizations have no web pages) and without an account. Apple
+    /// documents no address for a single device, so the link opens the
+    /// portal itself.
     var portalURL: URL? {
-        guard !isDemo, let service = connections.activeConnection.flatMap({ ABM.Service($0.service) }) else { return nil }
+        guard !isDemo, let service = connections.activeAppleConnection.flatMap({ ABM.Service($0.service) }) else { return nil }
         return Self.portalURL(for: service)
-    }
-
-    /// "Apple Business Manager" or "Apple School Manager", for the link's name.
-    var portalName: String {
-        connections.activeConnection?.service == .appleSchoolManager ? "Apple School Manager" : "Apple Business Manager"
     }
 
     nonisolated static func portalURL(for service: ABM.Service) -> URL {
@@ -131,7 +155,7 @@ final class AppleBusinessStore {
     }
 
     private func activeSetup() -> (Configuration?, problem: String?) {
-        guard let record = connections.activeConnection else { return (nil, nil) }
+        guard let record = connections.activeAppleConnection else { return (nil, nil) }
         do {
             return (Self.configuration(for: record, privateKey: try connections.readSecret(for: record) ?? ""), nil)
         } catch {
@@ -141,8 +165,8 @@ final class AppleBusinessStore {
 
     private func observeConnections() {
         withObservationTracking {
-            _ = connections.activeConnection
-            _ = demo?.isOn
+            _ = connections.activeAppleConnection
+            _ = demoConnection
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.connectionsChanged()
@@ -153,11 +177,11 @@ final class AppleBusinessStore {
 
     private func connectionsChanged() {
         let (updated, problem) = activeSetup()
-        let demoKey = clientKeyForDemo
-        guard updated != configuration || problem != connectionProblem || demoKey != lastDemoKey else { return }
+        let demoID = demoConnection?.id
+        guard updated != configuration || problem != connectionProblem || demoID != demoConnectionID else { return }
         configuration = updated
         connectionProblem = problem
-        lastDemoKey = demoKey
+        demoConnectionID = demoID
         client = nil
         clientKey = nil
         serverNames = nil
@@ -165,20 +189,21 @@ final class AppleBusinessStore {
         configurationGeneration += 1
     }
 
-    @ObservationIgnored private var lastDemoKey: String?
-    private var clientKeyForDemo: String? { isDemo ? "demo" : nil }
+    /// The demo organization in use when the lookups were last reset.
+    @ObservationIgnored private var demoConnectionID: UUID?
 
     // MARK: - Client
 
     /// The client of the account in use; nil when there is none.
     private func activeClient() throws -> ABM.Client? {
-        if isDemo {
-            guard let demo, let source = demo.source(for: .demoAppleBusiness) else { return nil }
-            if let client, clientKey == "demo" { return client }
+        if let demoConnection {
+            guard let source = demoChoice?.mode.source(for: demoConnection) else { return nil }
+            let key = "demo \(demoConnection.id)"
+            if let client, clientKey == key { return client }
             let newClient = try ABM.Client(connection: source.connection, privateKey: source.secret,
                                            session: source.session, log: activityLog)
             client = newClient
-            clientKey = "demo"
+            clientKey = key
             serverNames = nil
             return newClient
         }
@@ -316,3 +341,4 @@ final class AppleBusinessStore {
         return "Connected · \(product) · \(count) device management service\(count == 1 ? "" : "s")"
     }
 }
+

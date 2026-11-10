@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import JTKit
 import JTKitTestSupport
@@ -104,12 +105,46 @@ struct UnderTestTests {
         #expect(log.attempts().map(\.what) == ["GET example.jamfcloud.com/api/v2/mobile-devices/detail"])
     }
 
+    @Test("A lookup and Test Connection for a saved Apple account are refused before they're sent, and written down")
+    func savedAppleAccountIsRefused() async throws {
+        let log = temporaryLog()
+        defer { try? FileManager.default.removeItem(at: log.fileURL.deletingLastPathComponent()) }
+        let settings = TemporaryDefaults("under-test-apple")
+        defer { settings.remove() }
+        // A fake Apple that answers everything: nothing may reach it.
+        let server = MockServer { _ in .json(200, #"{"access_token": "x", "expires_in": 3600}"#) }
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore(), countsAsSaved: true)
+        let record = AppleBusinessConnection(name: "Lab Org", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                             clientID: "BUSINESSAPI.00000000-0000-0000-0000-000000000000",
+                                             keyID: "key-id-placeholder")
+        let pem = P256.Signing.PrivateKey().pemRepresentation
+        try connections.connections.save(.apple(record), secrets: [.main: pem])
+        connections.activeAppleID = record.id
+        let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: server.session,
+                                       underTestLog: log)
+
+        store.lookupIfNeeded(serial: "PLACEHOLDR05")
+        for _ in 0..<500 where store.state(forSerial: "PLACEHOLDR05") == .loading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .failed = store.state(forSerial: "PLACEHOLDR05") else {
+            Issue.record("The lookup wasn't refused: \(store.state(forSerial: "PLACEHOLDR05"))")
+            return
+        }
+        await #expect(throws: (any Error).self) { _ = try await store.testConnection(record, typedSecret: nil) }
+
+        #expect(server.requests.isEmpty)
+        let attempts = log.attempts().map(\.what)
+        #expect(!attempts.isEmpty)
+        #expect(attempts.allSatisfy { $0.hasPrefix("POST account.apple.com") })
+    }
+
     @Test("Only the app's real settings or Keychain count as the saved connections")
     func whatCountsAsSaved() {
         let settings = TemporaryDefaults("under-test")
         defer { settings.remove() }
-        #expect(!JamfConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore()).holdsSavedConnections)
-        #expect(!JamfConnectionStore.forUnitTestHost().holdsSavedConnections)
+        #expect(!AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore()).holdsSavedConnections)
+        #expect(!AppConnectionStore.forUnitTestHost().holdsSavedConnections)
     }
 
     private func until(_ condition: @escaping () -> Bool) async {

@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import JTKit
 import JTKitTestSupport
+import SwiftUI
 import Testing
 @testable import Serial_Number_Reader
 
@@ -67,12 +68,12 @@ struct AppleBusinessTests {
         let key = P256.Signing.PrivateKey()
         let settings = TemporaryDefaults("applebusiness")
         let secrets = InMemorySecretStore()
-        let connections = AppleBusinessConnectionStore(defaults: settings.defaults, secrets: secrets)
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: secrets)
         if saved {
             let record = AppleBusinessConnection(name: "Lab Org", service: service, signIn: .applePrivateKey,
                                                  clientID: Self.clientID, keyID: Self.keyID)
-            try connections.connections.save(record, secrets: [.main: key.pemRepresentation])
-            connections.activeID = record.id
+            try connections.connections.save(.apple(record), secrets: [.main: key.pemRepresentation])
+            connections.activeAppleID = record.id
         }
         let log = ActivityLog()
         let store = AppleBusinessStore(connections: connections, activityLog: log, session: server.session)
@@ -241,14 +242,14 @@ struct AppleBusinessTests {
         #expect(rig.api.map(\.path).contains("/v1/orgDevices/\(Self.serial)/relationships/assignedServer"))
     }
 
-    @Test("The Open in link goes to the portal of the account in use, and not in demo mode")
+    @Test("The Open in link goes to the portal of the account in use, named Apple Business or Apple School Manager, and not in demo mode")
     func portalLink() throws {
         let business = try makeRig()
         #expect(business.store.portalURL == URL(string: "https://business.apple.com"))
-        #expect(business.store.portalName == "Apple Business Manager")
+        #expect(business.store.productName == "Apple Business")
         let school = try makeRig(service: .appleSchoolManager)
         #expect(school.store.portalURL == URL(string: "https://school.apple.com"))
-        #expect(school.store.portalName == "Apple School Manager")
+        #expect(school.store.productName == "Apple School Manager")
         #expect(try makeRig(saved: false).store.portalURL == nil)
         let demo = AppleBusinessStore(connections: .forUnitTestHost(), demo: PreviewSupport.mode)
         #expect(demo.portalURL == nil)
@@ -324,11 +325,11 @@ struct AppleBusinessTests {
         }
         let settings = TemporaryDefaults("applebusiness")
         let key = P256.Signing.PrivateKey()
-        let connections = AppleBusinessConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
         let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
                                              clientID: Self.clientID, keyID: Self.keyID)
-        try connections.connections.save(record, secrets: [.main: key.pemRepresentation])
-        connections.activeID = record.id
+        try connections.connections.save(.apple(record), secrets: [.main: key.pemRepresentation])
+        connections.activeAppleID = record.id
         let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: server.session)
         guard case .failed(let message) = await finished(store) else {
             Issue.record("Expected a failure")
@@ -367,6 +368,97 @@ struct AppleBusinessTests {
         #expect(message.contains("429"))
     }
 
+    // MARK: Network
+
+    @Test("Toward Apple only the sign-in is a POST; every other request is a GET, to Apple's own hosts only")
+    func onlyGetsAndTheSignIn() async throws {
+        for service in [ConnectionService.appleBusinessManager, .appleSchoolManager] {
+            let rig = try makeRig(service: service)
+            guard case .found = await finished(rig.store) else {
+                Issue.record("Expected a found device")
+                continue
+            }
+            let record = try #require(rig.store.connections.activeAppleConnection)
+            _ = try await rig.store.testConnection(record, typedSecret: nil)
+            let apiHost = service == .appleSchoolManager ? "api-school.apple.com" : "api-business.apple.com"
+            #expect(!rig.server.requests.isEmpty)
+            for request in rig.server.requests {
+                #expect(request.url.scheme == "https")
+                if request.url.host() == "account.apple.com" {
+                    #expect(request.method == "POST")
+                    #expect(request.path == "/auth/oauth2/v2/token")
+                } else {
+                    #expect(request.url.host() == apiHost)
+                    #expect(request.method == "GET")
+                    #expect(request.bodyString.isEmpty)
+                }
+            }
+        }
+    }
+
+    // MARK: Storage
+
+    @Test("Apple accounts are saved apart: their own key and Keychain store, and the Jamf list stays byte for byte")
+    func storedApart() throws {
+        let settings = TemporaryDefaults("applebusiness-storage")
+        defer { settings.remove() }
+        let jamfSecrets = InMemorySecretStore()
+        let appleSecrets = InMemorySecretStore()
+        let jamf = JamfConnection(name: "Lab Jamf", service: .jamfPro, signIn: .apiClient,
+                                  serverURL: "https://example.jamfcloud.com", clientID: "jamf-client")
+        let store = AppConnectionStore(defaults: settings.defaults, secrets: jamfSecrets, appleSecrets: appleSecrets)
+        try store.connections.save(.jamf(jamf), secrets: [.main: "jamf-secret"])
+        let jamfList = try #require(settings.defaults.data(forKey: AppConnectionStore.listKey))
+
+        let apple = AppleBusinessConnection(name: "Lab Org", service: .appleSchoolManager, signIn: .applePrivateKey,
+                                            clientID: Self.clientID, keyID: Self.keyID)
+        try store.connections.save(.apple(apple), secrets: [.main: "PEM-PLACEHOLDER"])
+        store.activeAppleID = apple.id
+
+        // The Jamf list is untouched and reads as before, for older versions too.
+        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == jamfList)
+        #expect(try JSONDecoder().decode([JamfConnection].self, from: jamfList) == [jamf])
+        let appleList = try #require(settings.defaults.data(forKey: AppConnectionStore.appleListKey))
+        #expect(try JSONDecoder().decode([AppleBusinessConnection].self, from: appleList) == [apple])
+        #expect(settings.defaults.string(forKey: AppConnectionStore.appleActiveKey) == apple.id.uuidString)
+        // Each secret in its own store, under the connection's UUID.
+        #expect(jamfSecrets.secret(for: jamf.id.uuidString) == "jamf-secret")
+        #expect(jamfSecrets.secret(for: apple.id.uuidString) == nil)
+        #expect(appleSecrets.secret(for: apple.id.uuidString) == "PEM-PLACEHOLDER")
+        #expect(appleSecrets.secret(for: jamf.id.uuidString) == nil)
+
+        // Read again at the next launch: both lists, both choices.
+        let next = AppConnectionStore(defaults: settings.defaults, secrets: jamfSecrets, appleSecrets: appleSecrets)
+        #expect(next.jamfConnections == [jamf])
+        #expect(next.appleConnections == [apple])
+        #expect(next.activeConnection == jamf)
+        #expect(next.activeAppleConnection == apple)
+        #expect(try next.readSecret(for: apple) == "PEM-PLACEHOLDER")
+
+        // Deleting the account removes its list entry and key only.
+        try next.connections.delete(id: apple.id)
+        next.connectionWasDeleted()
+        #expect(next.activeAppleID == nil)
+        #expect(appleSecrets.secret(for: apple.id.uuidString) == nil)
+        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == jamfList)
+        #expect(jamfSecrets.secret(for: jamf.id.uuidString) == "jamf-secret")
+    }
+
+    @Test("The roles: the Jamf role takes Jamf services only, the Apple role Apple Business and Apple School Manager only")
+    func roles() throws {
+        let rig = try makeRig()
+        let jamf = JamfStore(connections: rig.store.connections)
+        let jamfRole = jamf.connectionRole(selection: .constant(nil))
+        let appleRole = rig.store.connectionRole(selection: .constant(nil))
+        for service in AppConnection.services {
+            let connection = Connection(name: "x", service: service)
+            #expect(jamfRole.accepts(connection) == AppConnection.jamfServices.contains(service))
+            #expect(appleRole.accepts(connection) == AppConnection.appleServices.contains(service))
+        }
+        #expect(!jamfRole.accepts(Connection(name: "x", service: .intune)))
+        #expect(!appleRole.accepts(Connection(name: "x", service: .intune)))
+    }
+
     // MARK: Test Connection, secrets, export
 
     @Test("Test Connection signs in with the typed private key and counts the MDM servers")
@@ -392,11 +484,16 @@ struct AppleBusinessTests {
             .map { ($0 as? Data).map { String(decoding: $0, as: UTF8.self) } ?? "\($0)" }.joined()
         #expect(!stored.contains(body))
         #expect(stored.contains(Self.clientID))
-        #expect(rig.secrets.secret(for: try #require(rig.store.connections.activeID).uuidString) == rig.pem)
+        #expect(rig.secrets.secret(for: try #require(rig.store.connections.activeAppleID).uuidString) == rig.pem)
         let logged = rig.log.entries.map(ActivityLogExport.transcript(of:)).joined()
             + ActivityLogExport.text(rig.log.entries, masked: false)
+        #expect(!rig.log.entries.isEmpty)
         #expect(!logged.contains(body))
         #expect(!logged.contains(Self.token))
+        // The client ID is saved with the account, like a Jamf client ID, but
+        // never logged.
+        #expect(!logged.contains(Self.clientID))
+        #expect(!logged.contains(Self.keyID))
     }
 
     @Test("The CSV has the two Apple Business columns, empty when the feature is off")

@@ -45,8 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
-    @State private var jamf = JamfStore(connections: AppDemo.connections(), activityLog: .app, demo: AppDemo.mode)
-    @State private var appleBusiness = AppleBusinessStore(connections: AppDemo.appleBusinessConnections(), activityLog: .app, demo: AppDemo.mode)
+    @State private var jamf = JamfStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
+    @State private var appleBusiness = AppleBusinessStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
     @State private var updates: UpdateChecker = {
         let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "Updates")
         return UpdateChecker(
@@ -70,11 +70,14 @@ struct SerialNumberReaderApp: App {
         }
         .commands {
             AppInfoCommands(appName: "Serial Number Reader") { updates.checkManually() }
-            // The toolbar picker's items, as JTKit's Connection menu.
+            // The toolbar pickers' items, as JTKit's Connection menu: Jamf,
+            // then Apple, each under its role's title.
             ConnectionCommands(
                 store: jamf.connections.connections,
                 roles: [jamf.connectionRole(selection: Binding(get: { jamf.connections.activeID },
-                                                               set: { jamf.connections.activeID = $0 }))]
+                                                               set: { jamf.connections.activeID = $0 })),
+                        appleBusiness.connectionRole(selection: Binding(get: { jamf.connections.activeAppleID },
+                                                                        set: { jamf.connections.activeAppleID = $0 }))]
             ) {
                 DemoModeSwitch(actions: appDelegate.actions, restore: appDelegate.restore)
             }
@@ -99,10 +102,8 @@ struct SerialNumberReaderApp: App {
         // JTKit's Settings window: Connections and Updates (no General tab:
         // the app has no general settings; it follows the Mac's appearance).
         SettingsWindow(updates: updates, opensTabsByName: true) {
-            SettingsView(jamf: jamf)
+            SettingsView(jamf: jamf, appleBusiness: appleBusiness)
                 // Settings › Connections notes that these are the real connections.
-                .environment(AppDemo.mode)
-            AppleBusinessSettingsView(store: appleBusiness)
                 .environment(AppDemo.mode)
         }
 
