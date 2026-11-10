@@ -622,6 +622,30 @@ struct AppleBusinessTests {
         #expect(!rig.api.contains { $0.path.hasSuffix("/relationships/assignedServer") || $0.path == "/v1/mdmServers" })
     }
 
+    @Test("Retry Lookup (⌘R) is offered when either lookup has an answer to repeat, and repeats the Apple one")
+    func retryCoversBothLookups() async throws {
+        let device = USBDevice(id: 1, mode: .recovery, productID: 0x1281, usbProductName: nil,
+                               descriptor: DescriptorParser.parse("CPID:6060 BDID:0A ECID:001A2B3C4D5E6F72 SRNM:[\(Self.serial)]"),
+                               udid: nil, modelInfo: nil, connectedAt: .now)
+        func offered(_ apple: AppleBusinessLookupState?) -> Bool {
+            DeviceActionAvailability(device: device, busy: false, editingAssetTag: false, connectedDeviceCount: 1,
+                                     configuratorAvailable: true, jamfState: .notConfigured, appleState: apple).retryLookup
+        }
+        #expect(!offered(nil))
+        #expect(!offered(.loading))
+        #expect(offered(.failed("x")))
+        #expect(offered(.notInOrganization))
+
+        let rig = try makeRig()
+        _ = await finished(rig.store)
+        let before = rig.api.filter { $0.path == "/v1/orgDevices/\(Self.serial)" }.count
+        rig.store.refresh(serial: Self.serial)
+        for _ in 0..<500 where rig.store.state(forSerial: Self.serial) == .loading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(rig.api.filter { $0.path == "/v1/orgDevices/\(Self.serial)" }.count == before + 1)
+    }
+
     // MARK: Test Connection, secrets, export
 
     @Test("Test Connection signs in with the typed private key and counts the MDM servers")

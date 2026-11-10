@@ -90,7 +90,7 @@ struct DeviceDetailView: View {
             restore: can.restore ? { showingRestore = true } : nil,
             revive: can.restore ? { showingRevive = true } : nil,
             removeTrust: can.removeTrust ? { actions.removeTrust(device: device) { monitor.markUntrusted(deviceID: deviceID) } } : nil,
-            retryLookup: can.retryLookup ? { jamf.refresh(for: device) } : nil,
+            retryLookup: can.retryLookup ? { retryLookups() } : nil,
             removeFromList: can.removeFromList ? { monitor.removeFromList(deviceID) } : nil
         )
     }
@@ -100,7 +100,24 @@ struct DeviceDetailView: View {
         DeviceActionAvailability(device: device, busy: isBusy || sheetOpen, editingAssetTag: editingAssetTag,
                                  connectedDeviceCount: connectedDeviceCount,
                                  configuratorAvailable: actions.isConfiguratorAvailable,
-                                 jamfState: jamf.state(for: device))
+                                 jamfState: jamf.state(for: device),
+                                 appleState: appleBusiness.isConfigured ? appleBusiness.state(forSerial: knownSerial) : nil)
+    }
+
+    /// Retry Lookup (the button and Device › Retry Lookup, ⌘R): the Jamf
+    /// lookup and the Apple one, both again.
+    private func retryLookups() {
+        jamf.refresh(for: device)
+        appleBusiness.refresh(serial: knownSerial)
+    }
+
+    /// Whether the Jamf section shows Retry Lookup; else the Apple section
+    /// does, so there is one button in the view.
+    private var jamfSectionShowsRetry: Bool {
+        switch jamf.state(for: device) {
+        case .found, .noMatch, .multipleMatches, .failed: true
+        case .notConfigured, .unavailable, .loading: false
+        }
     }
 
     private var jamfRecord: JamfDeviceRecord? {
@@ -411,12 +428,12 @@ struct DeviceDetailView: View {
             case .notInOrganization:
                 Label("This device isn’t in your \(appleBusiness.productName) organization.", systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)
-                appleBusinessRetryButton
+                if !jamfSectionShowsRetry { retryButton }
 
             case .failed(let message):
                 TintedLabel(message, systemImage: "xmark.octagon.fill", tint: .red)
                     .textSelection(.enabled)
-                appleBusinessRetryButton
+                if !jamfSectionShowsRetry { retryButton }
             }
         }
     }
@@ -470,7 +487,7 @@ struct DeviceDetailView: View {
                 .help("Opens \(appleBusiness.productName); search for the serial number there")
             }
             Spacer()
-            appleBusinessRetryButton
+            if !jamfSectionShowsRetry { retryButton }
         }
     }
 
@@ -484,15 +501,6 @@ struct DeviceDetailView: View {
         case .released: TintedLabel(text, systemImage: "xmark.seal", tint: .secondary)
         case .other: TintedLabel(text, systemImage: "questionmark.circle", tint: .secondary)
         }
-    }
-
-    private var appleBusinessRetryButton: some View {
-        Button {
-            appleBusiness.refresh(serial: knownSerial)
-        } label: {
-            Label("Retry Lookup", systemImage: "arrow.clockwise")
-        }
-        .help("Run the \(appleBusiness.productName) lookup again")
     }
 
     // MARK: Jamf
@@ -591,13 +599,16 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// The view's one Retry Lookup, for both lookups.
     private var retryButton: some View {
         Button {
-            jamf.refresh(for: device)
+            retryLookups()
         } label: {
             Label("Retry Lookup", systemImage: "arrow.clockwise")
         }
-        .help("Run the \(jamf.productName) lookup again")
+        .help(appleBusiness.isConfigured
+              ? "Run the \(jamf.productName) and \(appleBusiness.productName) lookups again"
+              : "Run the \(jamf.productName) lookup again")
     }
 }
 
@@ -848,7 +859,7 @@ nonisolated struct DeviceActionAvailability: Equatable {
     ///     menu) the Restore or Revive sheet is open.
     ///   - editingAssetTag: the asset tag editor is open.
     init(device: USBDevice, busy: Bool, editingAssetTag: Bool, connectedDeviceCount: Int,
-         configuratorAvailable: Bool, jamfState: JamfLookupState) {
+         configuratorAvailable: Bool, jamfState: JamfLookupState, appleState: AppleBusinessLookupState? = nil) {
         let offers = Offers(device: device)
         let ready = device.isConnected && !busy
         let vdm = ready && !Self.vdmUnavailable(connectedDeviceCount: connectedDeviceCount)
@@ -859,10 +870,16 @@ nonisolated struct DeviceActionAvailability: Equatable {
         restore = ready && offers.restore
             && Self.restoreUnavailableReason(device: device, configuratorAvailable: configuratorAvailable) == nil
         removeTrust = ready && offers.removeTrust && configuratorAvailable
-        retryLookup = switch jamfState {
+        // Either lookup has an answer to repeat; Retry repeats both.
+        let jamfRetry = switch jamfState {
         case .found, .noMatch, .multipleMatches, .failed: true
         case .notConfigured, .unavailable, .loading: false
         }
+        let appleRetry = switch appleState {
+        case .found, .notInOrganization, .failed: true
+        case .notConfigured, .unavailable, .loading, nil: false
+        }
+        retryLookup = jamfRetry || appleRetry
         removeFromList = !device.isConnected && !editingAssetTag
     }
 
