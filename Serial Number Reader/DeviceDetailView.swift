@@ -428,8 +428,8 @@ struct DeviceDetailView: View {
         if let model = device.deviceModel {
             LabeledContent("Model", value: model)
         }
-        if let family = device.productFamily {
-            LabeledContent("Product Family", value: family.capitalized)
+        if let family = AppleBusinessText.productFamily(device) {
+            LabeledContent("Product Family", value: family)
         }
         LabeledContent("Status") {
             appleBusinessStatus(device)

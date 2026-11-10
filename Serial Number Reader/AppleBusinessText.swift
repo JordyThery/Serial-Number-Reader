@@ -31,6 +31,13 @@ nonisolated enum AppleBusinessText {
         }
     }
 
+    /// Apple's own spelling, "iPhone", "iPad", "Mac": never recapitalized
+    /// (`capitalized` would make "Iphone").
+    static func productFamily(_ device: ABM.OrgDevice) -> String? {
+        guard let family = device.productFamily, !family.isEmpty else { return nil }
+        return family
+    }
+
     /// "Apple", "Reseller" and so on, with the reseller's ID when Apple gives one.
     static func purchaseSource(_ device: ABM.OrgDevice) -> String? {
         guard let type = device.purchaseSourceType, !type.isEmpty else { return nil }

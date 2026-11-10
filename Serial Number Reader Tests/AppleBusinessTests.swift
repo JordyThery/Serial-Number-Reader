@@ -427,6 +427,17 @@ struct AppleBusinessTests {
         #expect(AppleBusinessText.status(try device(nil)) == "Unknown")
     }
 
+    @Test("The product family is shown as Apple writes it: iPhone, iPad, never Iphone")
+    func productFamilySpelling() throws {
+        for family in ["iPhone", "iPad", "Mac", "AppleTV"] {
+            let device = try JSONDecoder().decode(ABM.OrgDevice.self,
+                                                  from: Data(#"{"serialNumber": "X", "productFamily": "\#(family)"}"#.utf8))
+            #expect(AppleBusinessText.productFamily(device) == family)
+        }
+        let none = try JSONDecoder().decode(ABM.OrgDevice.self, from: Data(#"{"serialNumber": "X", "productFamily": ""}"#.utf8))
+        #expect(AppleBusinessText.productFamily(none) == nil)
+    }
+
     // MARK: Storage
 
     @Test("Apple accounts are saved apart: their own key and Keychain store, and the Jamf list stays byte for byte")
