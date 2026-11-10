@@ -282,7 +282,7 @@ struct AppleBusinessTests {
 
     // MARK: Results
 
-    @Test("A device with its MDM server name and AppleCare coverage")
+    @Test("A device with its device management service and AppleCare coverage")
     func foundDevice() async throws {
         let rig = try makeRig()
         guard case .found(let record) = await finished(rig.store) else {
@@ -327,7 +327,7 @@ struct AppleBusinessTests {
         #expect(rig.api.first?.path == "/v1/orgDevices/\(Self.serial)")
     }
 
-    @Test("An unassigned device has no MDM server")
+    @Test("An unassigned device has no device management service")
     func unassigned() async throws {
         let rig = try makeRig { request in
             request.path.hasSuffix("/relationships/assignedServer") ? .json(200, #"{"data": null}"#) : nil
@@ -648,7 +648,7 @@ struct AppleBusinessTests {
 
     // MARK: Test Connection, secrets, export
 
-    @Test("Test Connection signs in with the typed private key and counts the MDM servers")
+    @Test("Test Connection signs in with the typed private key and counts the device management services")
     func testConnection() async throws {
         let rig = try makeRig(saved: false)
         let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
@@ -693,7 +693,7 @@ struct AppleBusinessTests {
         let row = SessionExport.row(for: device, jamf: .notConfigured, appleBusiness: state)
         #expect(row.appleBusinessStatus == "Assigned")
         #expect(row.appleBusinessMDMServer == "Lab MDM")
-        #expect(SessionExport.header.suffix(2) == ["Apple Business Status", "Apple Business MDM Server"])
+        #expect(SessionExport.header.suffix(2) == ["Apple Business Status", "Apple Business Device Management Service"])
         #expect(SessionExport.csv([row]).contains("Assigned,Lab MDM"))
 
         let off = SessionExport.row(for: device, jamf: .notConfigured)

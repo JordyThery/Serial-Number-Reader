@@ -406,7 +406,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
     func test23AppleBusinessSection() {
         selectPretendIPhone()
         XCTAssertTrue(any("Apple Business").waitForExistence(timeout: 20), "No Apple Business section")
-        XCTAssertTrue(any("MDM Server").waitForExistence(timeout: 20), "The Apple Business lookup found no record")
+        XCTAssertTrue(any("Device Management Service").waitForExistence(timeout: 20), "The Apple Business lookup found no record")
         XCTAssertFalse(anyContaining("Open in Apple Business").exists, "The demo organization has no web pages to open")
         let organization = connectionMenuItem("Contoso (Demo)")
         XCTAssertTrue(organization.waitForExistence(timeout: 5), "The Connection menu doesn't offer the demo Apple organization")

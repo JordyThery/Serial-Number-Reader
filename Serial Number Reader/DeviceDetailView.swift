@@ -452,10 +452,10 @@ struct DeviceDetailView: View {
             appleBusinessStatus(device)
         }
         if let problem = record.serverProblem {
-            TintedLabel("The MDM server couldn’t be read: \(problem)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+            TintedLabel("The device management service couldn’t be read: \(problem)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
                 .textSelection(.enabled)
         } else {
-            LabeledContent("MDM Server", value: record.mdmServerName ?? "None")
+            LabeledContent("Device Management Service", value: record.mdmServerName ?? "None")
         }
         if let order = device.orderNumber {
             LabeledContent("Order Number", value: order)

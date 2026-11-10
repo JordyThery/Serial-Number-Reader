@@ -32,7 +32,7 @@ nonisolated enum SessionExport {
         "Connected", "Disconnected", "Mode", "Model", "Model Identifier", "OS Version",
         "Device Name", "Serial Number", "Serial Source", "UDID", "ECID",
         "Jamf Name", "Asset Tag", "Managed", "Jamf Status",
-        "Apple Business Status", "Apple Business MDM Server",
+        "Apple Business Status", "Apple Business Device Management Service",
     ]
 
     /// - Parameter appleBusiness: the device's Apple Business or Apple School Manager

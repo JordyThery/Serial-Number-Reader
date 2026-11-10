@@ -6,11 +6,11 @@
 
 - **Apple Business and Apple School Manager lookup** (optional): once a
   device’s serial number is known, the app looks it up in your organization
-  and shows its model, product family, status, assigned MDM server, order
-  number, purchase source, date added and AppleCare coverage, with a link to
-  open Apple Business or Apple School Manager. Two new columns in the session
-  export show the status and MDM server. Contributed by
-  [Everette G. Allen](https://github.com/everetteallen).
+  and shows its model, product family, status, assigned device management
+  service, order number, purchase source, date added and AppleCare coverage,
+  with a link to open Apple Business or Apple School Manager. Two new columns
+  in the session export show the status and the device management service.
+  Contributed by [Everette G. Allen](https://github.com/everetteallen).
 - Add an Apple account in **Settings › Connections**, next to your Jamf
   connections. The app contacts Apple only once an Apple account is saved,
   and only reads. With an Apple account saved, a second picker in the
