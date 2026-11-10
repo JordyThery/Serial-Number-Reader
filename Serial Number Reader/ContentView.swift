@@ -91,6 +91,7 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     RestoreBanner(restore: restore)
                     RetryWaitBar(waits: jamf.waits)
+                    RetryWaitBar(waits: appleBusiness.waits)
                 }
             }
         }

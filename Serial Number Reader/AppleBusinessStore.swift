@@ -54,6 +54,10 @@ final class AppleBusinessStore {
     private(set) var connectionProblem: String?
 
     private(set) var lookupStates: [String: AppleBusinessLookupState] = [:]
+    /// The waits before a retry going on now ("Apple Business asked to
+    /// wait 40 s", or the app holding requests under Apple's limit of
+    /// about 20 a minute), shown with a Stop button above the details.
+    let waits = RequestWaits()
     /// Bumped whenever the account changes; the UI looks up again.
     private(set) var configurationGeneration = 0
 
@@ -211,8 +215,8 @@ final class AppleBusinessStore {
             guard let source = demoChoice?.mode.source(for: demoConnection) else { return nil }
             let key = "demo \(demoConnection.id)"
             if let client, clientKey == key { return client }
-            let newClient = try ABM.Client(connection: source.connection, privateKey: source.secret,
-                                           session: source.session, log: activityLog)
+            let newClient = try Self.makeClient(source.connection, privateKey: source.secret,
+                                                session: source.session, log: activityLog, waits: waits)
             client = newClient
             clientKey = key
             serverNames = nil
@@ -223,17 +227,27 @@ final class AppleBusinessStore {
         if let client, clientKey == key { return client }
         let newClient = try Self.makeClient(configuration.connection,
                                             privateKey: connections.secretReader(for: configuration.connection),
-                                            session: session, log: activityLog)
+                                            session: session, log: activityLog, waits: waits)
         client = newClient
         clientKey = key
         serverNames = nil
         return newClient
     }
 
+    /// JTKit's Apple Business client, its waits shown (`waits`): Apple's
+    /// limit and its "try again later" answers can hold a lookup for a
+    /// while, and Stop ends the wait.
     /// - Parameter privateKey: read at each sign-in, never before.
     nonisolated static func makeClient(_ connection: Connection, privateKey: @escaping @Sendable () throws -> String,
-                                       session: URLSession, log: ActivityLog?) throws -> ABM.Client {
-        try ABM.Client(connection: connection, privateKey: privateKey, session: session, log: log)
+                                       session: URLSession, log: ActivityLog?, waits: RequestWaits?) throws -> ABM.Client {
+        guard let service = ABM.Service(connection.service) else {
+            throw ConnectionTestError("\(connection.service.displayName) isn’t Apple Business or Apple School Manager.")
+        }
+        let recorder = RequestRecorder(session: session, log: log, service: service.label,
+                                       connection: connection.name.isEmpty ? nil : connection.name, waits: waits)
+        let tokens = ABM.TokenProvider(service: service, clientID: connection.clientID, keyID: connection.keyID,
+                                       privateKey: privateKey, recorder: recorder)
+        return ABM.Client(service: service, tokens: tokens, recorder: recorder, rateLimit: ABM.rateLimit(for: connection))
     }
 
     // MARK: - Lookups
@@ -298,7 +312,8 @@ final class AppleBusinessStore {
             do {
                 (state, names) = try await Self.lookup(serial: serial, client: client, serverNames: knownNames)
             } catch is CancellationError {
-                state = .failed("Stopped while waiting to try again. Choose Retry Lookup to look it up again.")
+                // Stop in the wait bar: not sent again.
+                state = .failed(JamfStore.stoppedText)
             } catch {
                 // Apple's message (status, error codes, hints). It can hold
                 // the server's answer: private in the system log.
@@ -324,7 +339,9 @@ final class AppleBusinessStore {
         guard let device = try await client.device(serial: serial) else { return (.notInOrganization, serverNames) }
         var names = serverNames
         var serverName: String?
-        if !device.isReleased, let serverID = try await client.assignedServerID(serial: serial) {
+        // An unassigned or released device has no service: one request saved.
+        let kind = AppleBusinessText.statusKind(device)
+        if kind != .unassigned, kind != .released, let serverID = try await client.assignedServerID(serial: serial) {
             if names == nil { names = Dictionary(try await client.mdmServers().map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }) }
             serverName = names?[serverID] ?? serverID
         }
@@ -353,7 +370,8 @@ final class AppleBusinessStore {
         }
         let privateKey: @Sendable () throws -> String = typedKey.map { key in { key } }
             ?? connections.secretReader(for: configuration.connection)
-        let client = try Self.makeClient(configuration.connection, privateKey: privateKey, session: session, log: activityLog)
+        let client = try Self.makeClient(configuration.connection, privateKey: privateKey, session: session,
+                                         log: activityLog, waits: waits)
         let count = try await client.testConnection()
         let product = ABM.Service(record.service)?.label ?? record.service.displayName
         return "Connected · \(product) · \(count) device management service\(count == 1 ? "" : "s")"

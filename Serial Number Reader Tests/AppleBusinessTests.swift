@@ -564,6 +564,45 @@ struct AppleBusinessTests {
         #expect(!appleRole.accepts(Connection(name: "x", service: .intune)))
     }
 
+    @Test("A wait for Apple shows in the wait bar, and Stop ends the lookup without sending it again")
+    func waitIsShownAndCanBeStopped() async throws {
+        let calls = LockedCounter()
+        let rig = try makeRig { request in
+            guard request.path == "/v1/orgDevices/\(Self.serial)" else { return nil }
+            _ = calls.next()
+            return .json(429, #"{"errors": [{"status": "429", "code": "RATE_LIMIT", "title": "Too many requests"}]}"#,
+                         headers: ["Retry-After": "40"])
+        }
+        rig.store.lookupIfNeeded(serial: Self.serial)
+        for _ in 0..<500 where rig.store.waits.statusText == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let text = try #require(rig.store.waits.statusText)
+        #expect(text.contains("Apple asked to wait"))
+        rig.store.waits.cancelAll()
+        for _ in 0..<500 where rig.store.state(forSerial: Self.serial) == .loading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(rig.store.state(forSerial: Self.serial) == .failed(JamfStore.stoppedText))
+        #expect(rig.store.waits.statusText == nil)
+        #expect(calls.value == 1)
+    }
+
+    @Test("An unassigned device costs no assigned-server request")
+    func unassignedSkipsServerRequest() async throws {
+        let unassigned = Self.deviceJSON.replacingOccurrences(of: #""status": "ASSIGNED""#, with: #""status": "UNASSIGNED""#)
+        let rig = try makeRig { request in
+            request.path == "/v1/orgDevices/\(Self.serial)" ? .json(200, unassigned) : nil
+        }
+        guard case .found(let record) = await finished(rig.store) else {
+            Issue.record("Expected a found device")
+            return
+        }
+        #expect(AppleBusinessText.statusKind(record.device) == .unassigned)
+        #expect(record.mdmServerName == nil)
+        #expect(!rig.api.contains { $0.path.hasSuffix("/relationships/assignedServer") || $0.path == "/v1/mdmServers" })
+    }
+
     // MARK: Test Connection, secrets, export
 
     @Test("Test Connection signs in with the typed private key and counts the MDM servers")
