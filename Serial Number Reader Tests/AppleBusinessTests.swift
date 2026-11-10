@@ -101,7 +101,7 @@ struct AppleBusinessTests {
         #expect(rig.server.requests.isEmpty)
     }
 
-    @Test("An account without key ID or private key is incomplete, so the feature stays off")
+    @Test("An account without key ID or private key is incomplete: no lookup configuration")
     func incompleteAccount() {
         let record = AppleBusinessConnection(name: "Lab", service: .appleBusinessManager, signIn: .applePrivateKey,
                                              clientID: Self.clientID, keyID: "")
@@ -113,6 +113,37 @@ struct AppleBusinessTests {
         // A Jamf service is never an Apple account.
         complete.service = .jamfPro
         #expect(AppleBusinessStore.configuration(for: complete, hasPrivateKey: true) == nil)
+    }
+
+    @Test("An incomplete account in use: the section says what's missing, and nothing is sent")
+    func incompleteAccountSaysWhatsMissing() async throws {
+        let rig = try makeRig(saved: false)
+        let record = AppleBusinessConnection(name: "Lab Org", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                             clientID: Self.clientID, keyID: "")
+        let settings = TemporaryDefaults("applebusiness-incomplete")
+        defer { settings.remove() }
+        let connections = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        try connections.connections.save(.apple(record))
+        connections.activeAppleID = record.id
+        let store = AppleBusinessStore(connections: connections, activityLog: ActivityLog(), session: rig.server.session)
+        let message = "“Lab Org” is missing its key ID and private key. Complete it in Settings › Connections."
+        #expect(store.isConfigured)
+        #expect(store.state(forSerial: Self.serial) == .incomplete(message))
+        store.lookupIfNeeded(serial: Self.serial)
+        store.refresh(serial: Self.serial)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.server.requests.isEmpty)
+        #expect(AppleBusinessText.exportStatus(store.stateSoFar(forSerial: Self.serial)) == "Account incomplete")
+
+        #expect(AppleBusinessStore.missing(in: record, hasPrivateKey: true) == "“Lab Org” is missing its key ID. Complete it in Settings › Connections.")
+        var empty = record
+        empty.clientID = ""
+        empty.name = ""
+        #expect(AppleBusinessStore.missing(in: empty, hasPrivateKey: false)
+                == "The Apple account in use is missing its client ID, key ID and private key. Complete it in Settings › Connections.")
+        var complete = record
+        complete.keyID = Self.keyID
+        #expect(AppleBusinessStore.missing(in: complete, hasPrivateKey: true) == nil)
     }
 
     @Test("The private key is read only when signing in: not at launch, not for later lookups, never kept")
@@ -302,6 +333,65 @@ struct AppleBusinessTests {
         #expect(AppleBusinessText.coverage(record.coverage[0]).hasPrefix("Active until"))
         #expect(record.coverageProblem == nil)
         #expect(rig.api.map(\.path).contains("/v1/orgDevices/\(Self.serial)/relationships/assignedServer"))
+    }
+
+    @Test("A device management service added since the names were read is named: the list is read again, once per lookup")
+    func newServiceIsNamed() async throws {
+        final class Count: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            func next() -> Int { lock.withLock { value += 1; return value } }
+        }
+        let reads = Count()
+        // Serials ending in 3 are assigned to SERVER-3, which Apple lists from the second read on;
+        // ending in 9 to SERVER-9, which it never lists.
+        let rig = try makeRig { request in
+            let parts = request.path.split(separator: "/").map(String.init)
+            if parts.count == 3, parts[1] == "orgDevices" { return .json(200, Self.deviceJSON) }
+            if parts.count == 5, parts[4] == "assignedServer" {
+                let id = parts[2].hasSuffix("3") ? "SERVER-3" : parts[2].hasSuffix("9") ? "SERVER-9" : "SERVER-1"
+                return .json(200, #"{"data": {"type": "mdmServers", "id": "\#(id)"}}"#)
+            }
+            if parts.count == 4, parts[3] == "appleCareCoverage" { return .json(200, #"{"data": []}"#) }
+            if request.path == "/v1/mdmServers" {
+                let extra = reads.next() > 1 ? #", {"id": "SERVER-3", "type": "mdmServers", "attributes": {"serverName": "New MDM"}}"# : ""
+                return .json(200, #"{"data": [{"id": "SERVER-1", "type": "mdmServers", "attributes": {"serverName": "Lab MDM"}}\#(extra)]}"#)
+            }
+            return nil
+        }
+        func serverName(_ serial: String) async -> String? {
+            if case .found(let record) = await finished(rig.store, serial) { return record.mdmServerName }
+            return nil
+        }
+        var listReads: Int { rig.api.filter { $0.path == "/v1/mdmServers" }.count }
+
+        #expect(await serverName("PLACEHOLDR01") == "Lab MDM")
+        #expect(listReads == 1)
+        // Known: not read again.
+        #expect(await serverName("PLACEHOLDR02") == "Lab MDM")
+        #expect(listReads == 1)
+        // Unknown: read again, once, and named.
+        #expect(await serverName("PLACEHOLDR03") == "New MDM")
+        #expect(listReads == 2)
+        // Never listed: read again once for this lookup, then its ID is shown.
+        #expect(await serverName("PLACEHOLDR09") == "SERVER-9")
+        #expect(listReads == 3)
+    }
+
+    @Test("The bug-report export masks Apple's order number and the reseller's ID; the unmasked one keeps them")
+    func purchaseDetailsMasked() async throws {
+        let rig = try makeRig()
+        guard case .found = await finished(rig.store) else {
+            Issue.record("Expected a found device")
+            return
+        }
+        let masked = ActivityLogExport.text(rig.log.entries, masked: true)
+        let unmasked = ActivityLogExport.text(rig.log.entries, masked: false)
+        #expect(unmasked.contains("ORDER-PLACEHOLDER"))
+        #expect(unmasked.contains("\"RS-1\""))
+        #expect(!masked.contains("ORDER-PLACEHOLDER"))
+        #expect(!masked.contains("RS-1"))
+        #expect(!masked.contains(Self.serial))
     }
 
     @Test("The Open in link goes to the portal of the account in use, named Apple Business or Apple School Manager, and not in demo mode")
@@ -628,7 +718,7 @@ struct AppleBusinessTests {
                                descriptor: DescriptorParser.parse("CPID:6060 BDID:0A ECID:001A2B3C4D5E6F72 SRNM:[\(Self.serial)]"),
                                udid: nil, modelInfo: nil, connectedAt: .now)
         func offered(_ apple: AppleBusinessLookupState?) -> Bool {
-            DeviceActionAvailability(device: device, busy: false, editingAssetTag: false, connectedDeviceCount: 1,
+            DeviceActionAvailability(device: device, busy: false, editingAssetTag: false, portRefusal: nil,
                                      configuratorAvailable: true, jamfState: .notConfigured, appleState: apple).retryLookup
         }
         #expect(!offered(nil))
@@ -727,7 +817,7 @@ struct AppleBusinessTests {
         #expect(saved.first?.clientID == "c")
     }
 
-    @Test("An unreadable Apple list is never overwritten: a copy is kept and saving is refused")
+    @Test("An unreadable Apple list doesn't hide the Jamf connections, is never overwritten, and a copy is kept")
     func unreadableAppleList() throws {
         let settings = TemporaryDefaults("applebusiness-unreadable")
         defer { settings.remove() }
@@ -738,11 +828,71 @@ struct AppleBusinessTests {
         let garbage = Data("not json".utf8)
         settings.defaults.set(garbage, forKey: AppConnectionStore.appleListKey)
         let store = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
-        #expect(store.connections.problem != nil)
-        #expect(throws: (any Error).self) { try store.connections.save(.jamf(jamf), secrets: [.main: "s"]) }
-        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == garbage)
-        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == jamfList)
+
+        // The Jamf connections still load; the Apple list's problem is told.
+        #expect(store.connections.problem == nil)
+        #expect(store.jamfConnections == [jamf])
+        #expect(store.activeConnection == jamf)
+        #expect(store.listProblem?.contains("Apple accounts couldn’t be read") == true)
         #expect(settings.defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppConnectionStore.appleListKey + ".unreadable") })
+
+        // A Jamf connection can be saved; the Apple list stays as it was.
+        var renamed = jamf
+        renamed.name = "Lab Jamf 2"
+        try store.connections.save(.jamf(renamed), secrets: [.main: "s"])
+        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == garbage)
+        let savedJamf = try JSONDecoder().decode([JamfConnection].self,
+                                                 from: try #require(settings.defaults.data(forKey: AppConnectionStore.listKey)))
+        #expect(savedJamf.map(\.name) == ["Lab Jamf 2"])
+
+        // An Apple account isn't saved into the unreadable list.
+        let apple = AppleBusinessConnection(name: "Lab Org", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                            clientID: Self.clientID, keyID: Self.keyID)
+        #expect(throws: (any Error).self) { try store.connections.save(.apple(apple)) }
+        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == garbage)
+    }
+
+    @Test("An unreadable Jamf list doesn't hide the Apple accounts, and is never overwritten")
+    func unreadableJamfList() throws {
+        let settings = TemporaryDefaults("jamf-unreadable")
+        defer { settings.remove() }
+        let apple = AppleBusinessConnection(name: "Lab Org", service: .appleBusinessManager, signIn: .applePrivateKey,
+                                            clientID: Self.clientID, keyID: Self.keyID)
+        let appleList = try JSONEncoder().encode([apple])
+        settings.defaults.set(appleList, forKey: AppConnectionStore.appleListKey)
+        let garbage = Data("not json".utf8)
+        settings.defaults.set(garbage, forKey: AppConnectionStore.listKey)
+        // The conversion of old settings has run before.
+        settings.defaults.set(true, forKey: LegacySettingsConversion.markerKey)
+        let store = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+
+        #expect(store.connections.problem == nil)
+        #expect(store.appleConnections == [apple])
+        #expect(store.activeAppleConnection == apple)
+        #expect(store.listProblem?.contains("Jamf connections couldn’t be read") == true)
+
+        let jamf = JamfConnection(name: "Lab Jamf", service: .jamfPro, signIn: .apiClient,
+                                  serverURL: "https://example.jamfcloud.com", clientID: "c")
+        #expect(throws: (any Error).self) { try store.connections.save(.jamf(jamf), secrets: [.main: "s"]) }
+        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == garbage)
+        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == appleList)
+    }
+
+    @Test("When neither list can be read, nothing loads and every save is refused")
+    func bothListsUnreadable() throws {
+        let settings = TemporaryDefaults("both-unreadable")
+        defer { settings.remove() }
+        let garbage = Data("not json".utf8)
+        settings.defaults.set(garbage, forKey: AppConnectionStore.listKey)
+        settings.defaults.set(garbage, forKey: AppConnectionStore.appleListKey)
+        settings.defaults.set(true, forKey: LegacySettingsConversion.markerKey)
+        let store = AppConnectionStore(defaults: settings.defaults, secrets: InMemorySecretStore())
+        #expect(store.connections.problem != nil)
+        let jamf = JamfConnection(name: "Lab Jamf", service: .jamfPro, signIn: .apiClient,
+                                  serverURL: "https://example.jamfcloud.com", clientID: "c")
+        #expect(throws: (any Error).self) { try store.connections.save(.jamf(jamf), secrets: [.main: "s"]) }
+        #expect(settings.defaults.data(forKey: AppConnectionStore.listKey) == garbage)
+        #expect(settings.defaults.data(forKey: AppConnectionStore.appleListKey) == garbage)
     }
 
     // MARK: Test Connection, secrets, export

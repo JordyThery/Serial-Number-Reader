@@ -42,6 +42,9 @@ final class RestoreController {
         var fraction: Double?
         var log: [String] = []
         var state: State = .running
+        /// Said with success: e.g. the device came back but couldn't be
+        /// confirmed as the same one, or a Mac, which can't be followed on USB.
+        var note: String?
     }
 
     private(set) var job: Job?
@@ -72,6 +75,16 @@ final class RestoreController {
     private let demo: DemoUSB?
     /// The app's USB actions: no job starts while one runs.
     weak var actions: DeviceActionController?
+    /// Watches the device list after a Restore for the device to start up
+    /// again; nil doesn't wait (previews and most tests). Set by the app.
+    @ObservationIgnored var returnWatch: DeviceReturnWatch?
+
+    /// Said after a Mac's restore: a Mac that starts up doesn't appear on USB.
+    nonisolated static let macNotFollowed =
+        "A Mac that starts up doesn’t appear on USB, so the app can’t confirm it came back. Check the Mac itself."
+    /// The step shown while waiting for the restored device.
+    nonisolated static let waitingStep = "Waiting for the device to start up"
+
 
     init(activityLog: ActivityLog? = nil, demo: DemoUSB? = nil,
          run: @escaping @Sendable (Configurator.Operation, String) -> AsyncThrowingStream<ConfiguratorEvent, any Error>
@@ -89,10 +102,12 @@ final class RestoreController {
     /// that doesn't belong to the current mode: a real one in demo mode, the
     /// pretend iPhone outside it.
     ///
-    /// - Parameter serialNumber: named in the activity log, when known.
+    /// - Parameters:
+    ///   - serialNumber: named in the activity log, when known.
+    ///   - isMac: a Mac, whose return after a Restore can't be seen on USB.
     @discardableResult
     func start(_ operation: Configurator.Operation, ecid: String, deviceName: String,
-               serialNumber: String? = nil) -> Task<Void, Never>? {
+               serialNumber: String? = nil, isMac: Bool = false) -> Task<Void, Never>? {
         guard !isRunning else {
             refusal = "Another restore or revive is still running. Wait until it finishes, then try again."
             return nil
@@ -134,6 +149,10 @@ final class RestoreController {
                                   note: note(kind == .restore ? "Firmware: \(ipswName ?? "the latest signed version")." : nil),
                                   service: "Apple Configurator", connection: connection, devices: devices)
         let started = ContinuousClock.now
+        let startDate = Date.now
+        // After a Restore, success only once the same device has started up
+        // (not after a Revive: a device with a passcode stays off USB until unlocked).
+        let expectation: DeviceReturnExpectation? = kind == .restore && !isMac ? .restore(ecid: ecid) : nil
         func elapsed() -> TimeInterval {
             let duration = started.duration(to: .now)
             return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
@@ -150,11 +169,23 @@ final class RestoreController {
                 for try await event in stream {
                     handle(event)
                 }
+                var confirmation: String?
+                if kind == .restore, isMac {
+                    confirmation = Self.macNotFollowed
+                } else if let expectation, let returnWatch {
+                    handle(.step(Self.waitingStep))
+                    switch await returnWatch.wait(for: expectation, since: startDate) {
+                    case .back: break
+                    case .backUnconfirmed(let text): confirmation = text
+                    case .notBack(let message): throw Configurator.Failure(message: message)
+                    }
+                }
                 job?.state = .succeeded
                 job?.fraction = 1
-                append("Completed")
+                job?.note = confirmation
+                append(confirmation.map { "Completed. \($0)" } ?? "Completed")
                 activityLog?.recordAction("\(kind == .restore ? "Restored" : "Revived") \(named) with Apple Configurator",
-                                          note: note(nil), service: "Apple Configurator", connection: connection,
+                                          note: note(confirmation), service: "Apple Configurator", connection: connection,
                                           devices: devices, duration: elapsed())
             } catch {
                 job?.state = .failed(error.localizedDescription)

@@ -20,8 +20,10 @@ nonisolated struct AppleBusinessRecord: Equatable, Sendable {
 
 /// Lookup state for one serial number.
 nonisolated enum AppleBusinessLookupState: Equatable, Sendable {
-    /// No account in use, or the one in use is incomplete.
+    /// No account in use.
     case notConfigured
+    /// The account in use is incomplete: what's missing, for Settings › Connections.
+    case incomplete(String)
     /// There is no serial number to look up (yet).
     case unavailable(String)
     case loading
@@ -55,6 +57,9 @@ final class AppleBusinessStore {
     /// Why the account in use can't be used although it is filled in (the
     /// Keychain can't be read).
     private(set) var connectionProblem: String?
+    /// What the account in use is missing (client ID, key ID, private
+    /// key), as a sentence; nil when it is complete or there is none.
+    private(set) var incompleteAccount: String?
 
     private(set) var lookupStates: [String: AppleBusinessLookupState] = [:]
     /// The waits before a retry going on now ("Apple Business asked to
@@ -79,6 +84,9 @@ final class AppleBusinessStore {
     /// The organization's device management services by ID, read once per client.
     @ObservationIgnored private var serverNames: [String: String]?
     @ObservationIgnored private var inFlight: Set<String> = []
+    /// Apple's requests pass through it on their way to `activityLog`, so
+    /// the bug-report export masks the order number and the reseller's ID.
+    @ObservationIgnored private let relay: AppleActivityRelay
     private let logger = Logger(subsystem: "be.jordythery.SerialNumberReader", category: "AppleBusinessStore")
 
     /// - Parameters:
@@ -94,6 +102,7 @@ final class AppleBusinessStore {
         let connections = connections ?? AppConnectionStore()
         self.connections = connections
         self.activityLog = activityLog ?? ActivityLog()
+        relay = AppleActivityRelay(target: self.activityLog)
         // Under tests the saved accounts are never reached: every request
         // for them, sign-in and Test Connection included, is refused and
         // written down (demo requests are unaffected).
@@ -102,7 +111,7 @@ final class AppleBusinessStore {
         // Apple Business only: JTKit's demo Apple School Manager shares its
         // name with the demo Jamf School ("Contoso Academy (Demo)").
         demoChoice = demo.map { DemoConnectionChoice(mode: $0, connections: [.demoAppleBusiness]) }
-        (configuration, connectionProblem) = activeSetup()
+        (configuration, connectionProblem, incompleteAccount) = activeSetup()
         demoConnectionID = demoConnection?.id
         observeConnections()
     }
@@ -124,8 +133,11 @@ final class AppleBusinessStore {
     var isDemo: Bool { demoConnection != nil }
 
     /// Whether the section is shown at all: an account is in use (or the
-    /// problem with it is). Demo mode always has one.
-    var isConfigured: Bool { isDemo || configuration != nil || connectionProblem != nil }
+    /// problem with it, or what it's missing). Demo mode always has one.
+    var isConfigured: Bool { canLookUp || incompleteAccount != nil }
+
+    /// Whether lookups run: a complete account (or the problem with it), or demo mode.
+    private var canLookUp: Bool { isDemo || configuration != nil || connectionProblem != nil }
 
     /// The service of the account in use, or in demo mode of the demo organization.
     private var service: ABM.Service {
@@ -164,13 +176,27 @@ final class AppleBusinessStore {
     }
 
     /// Asks the Keychain only whether the key is there, never for the key.
-    private func activeSetup() -> (Configuration?, problem: String?) {
-        guard let record = connections.activeAppleConnection else { return (nil, nil) }
+    private func activeSetup() -> (Configuration?, problem: String?, incomplete: String?) {
+        guard let record = connections.activeAppleConnection else { return (nil, nil, nil) }
         do {
-            return (Self.configuration(for: record, hasPrivateKey: try connections.hasSecret(for: record)), nil)
+            let hasKey = try connections.hasSecret(for: record)
+            let configuration = Self.configuration(for: record, hasPrivateKey: hasKey)
+            return (configuration, nil, configuration == nil ? Self.missing(in: record, hasPrivateKey: hasKey) : nil)
         } catch {
-            return (nil, error.localizedDescription)
+            return (nil, error.localizedDescription, nil)
         }
+    }
+
+    /// "“Lab” is missing its key ID and private key." Nil when nothing is missing.
+    nonisolated static func missing(in record: AppleBusinessConnection, hasPrivateKey: Bool) -> String? {
+        var parts: [String] = []
+        if record.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append("client ID") }
+        if record.keyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append("key ID") }
+        if !hasPrivateKey { parts.append("private key") }
+        guard !parts.isEmpty else { return nil }
+        let list = parts.count == 1 ? parts[0] : parts.dropLast().joined(separator: ", ") + " and " + parts[parts.count - 1]
+        let name = record.name.isEmpty ? "The Apple account in use" : "“\(record.name)”"
+        return "\(name) is missing its \(list). Complete it in Settings › Connections."
     }
 
     /// The secret writes the client was made after.
@@ -190,14 +216,15 @@ final class AppleBusinessStore {
     }
 
     private func connectionsChanged() {
-        let (updated, problem) = activeSetup()
+        let (updated, problem, incomplete) = activeSetup()
         let demoID = demoConnection?.id
         // A replaced private key: the client's token was signed with the old one.
         let writes = connections.secretWrites.count
-        guard updated != configuration || problem != connectionProblem || demoID != demoConnectionID
-                || writes != secretWritesSeen else { return }
+        guard updated != configuration || problem != connectionProblem || incomplete != incompleteAccount
+                || demoID != demoConnectionID || writes != secretWritesSeen else { return }
         configuration = updated
         connectionProblem = problem
+        incompleteAccount = incomplete
         demoConnectionID = demoID
         secretWritesSeen = writes
         client = nil
@@ -219,7 +246,7 @@ final class AppleBusinessStore {
             let key = "demo \(demoConnection.id)"
             if let client, clientKey == key { return client }
             let newClient = try Self.makeClient(source.connection, privateKey: source.secret,
-                                                session: source.session, log: activityLog, waits: waits)
+                                                session: source.session, log: relay.staging, waits: waits)
             client = newClient
             clientKey = key
             serverNames = nil
@@ -230,7 +257,7 @@ final class AppleBusinessStore {
         if let client, clientKey == key { return client }
         let newClient = try Self.makeClient(configuration.connection,
                                             privateKey: connections.secretReader(for: configuration.connection),
-                                            session: session, log: activityLog, waits: waits)
+                                            session: session, log: relay.staging, waits: waits)
         client = newClient
         clientKey = key
         serverNames = nil
@@ -264,6 +291,7 @@ final class AppleBusinessStore {
     func state(forSerial serial: String?) -> AppleBusinessLookupState {
         guard let serial = Self.normalized(serial) else { return .unavailable("No serial number to look up yet") }
         if !isDemo, let connectionProblem { return .failed(connectionProblem) }
+        if !isDemo, let incompleteAccount { return .incomplete(incompleteAccount) }
         guard isConfigured else { return .notConfigured }
         return lookupStates[serial] ?? .loading
     }
@@ -271,21 +299,21 @@ final class AppleBusinessStore {
     /// The state as far as a lookup already ran, for the CSV export: a
     /// device that was never looked up is "not available", not pending.
     func stateSoFar(forSerial serial: String?) -> AppleBusinessLookupState {
-        guard let key = Self.normalized(serial), lookupStates[key] == nil else { return state(forSerial: serial) }
-        return isConfigured ? .unavailable("Not looked up") : .notConfigured
+        guard let key = Self.normalized(serial), lookupStates[key] == nil, canLookUp else { return state(forSerial: serial) }
+        return .unavailable("Not looked up")
     }
 
     /// Starts a lookup unless one already ran or is running.
     func lookupIfNeeded(serial: String?) {
-        guard let serial = Self.normalized(serial), isConfigured, lookupStates[serial] == nil else { return }
+        guard let serial = Self.normalized(serial), canLookUp, lookupStates[serial] == nil else { return }
         performLookup(serial)
     }
 
     /// Looks up again, discarding any cached result. A Keychain that
     /// couldn't be read is asked again.
     func refresh(serial: String?) {
-        if connectionProblem != nil { (configuration, connectionProblem) = activeSetup() }
-        guard let serial = Self.normalized(serial), isConfigured else { return }
+        if connectionProblem != nil { (configuration, connectionProblem, incompleteAccount) = activeSetup() }
+        guard let serial = Self.normalized(serial), canLookUp else { return }
         lookupStates[serial] = nil
         performLookup(serial)
     }
@@ -324,6 +352,7 @@ final class AppleBusinessStore {
                 state = .failed(error.localizedDescription)
             }
             inFlight.remove(serial)
+            relay.forward()
             if generation == configurationGeneration {
                 if let names { serverNames = names }
                 lookupStates[serial] = state
@@ -349,7 +378,9 @@ final class AppleBusinessStore {
         if kind != .unassigned, kind != .released {
             do {
                 if let serverID = try await client.assignedServerID(serial: serial) {
-                    if names == nil {
+                    // The names are read once and kept; a service added since
+                    // (an ID not in them) reads them again, at most once per lookup.
+                    if names?[serverID] == nil {
                         names = Dictionary(try await client.mdmServers().map { ($0.id, $0.name) },
                                            uniquingKeysWith: { first, _ in first })
                     }
@@ -379,6 +410,7 @@ final class AppleBusinessStore {
     /// A private key typed or imported in the editor is used instead of the
     /// stored one. Always the real account and the real network.
     func testConnection(_ record: AppleBusinessConnection, typedSecret: String?) async throws -> String {
+        defer { relay.forward() }
         let typedKey = typedSecret.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         let hasKey = try typedKey != nil || connections.hasSecret(for: record)
         guard let configuration = Self.configuration(for: record, hasPrivateKey: hasKey) else {
@@ -387,7 +419,7 @@ final class AppleBusinessStore {
         let privateKey: @Sendable () throws -> String = typedKey.map { key in { key } }
             ?? connections.secretReader(for: configuration.connection)
         let client = try Self.makeClient(configuration.connection, privateKey: privateKey, session: session,
-                                         log: activityLog, waits: waits)
+                                         log: relay.staging, waits: waits)
         let count = try await client.testConnection()
         let product = ABM.Service(record.service)?.label ?? record.service.displayName
         return "Connected · \(product) · \(count) device management service\(count == 1 ? "" : "s")"

@@ -21,10 +21,6 @@ struct DeviceDetailView: View {
     /// Shared app-wide: one Restore or Revive at a time.
     let restore: RestoreController
     let monitor: USBDeviceMonitor
-    /// Number of currently connected devices; the VDM actions are offered
-    /// only while exactly one device is attached, because the command goes
-    /// to the first connected port, not to the selected device.
-    let connectedDeviceCount: Int
 
     /// Raw descriptor fields are collapsed by default — they're diagnostic
     /// detail and take a lot of vertical space.
@@ -98,7 +94,7 @@ struct DeviceDetailView: View {
     /// Which actions are possible now, for the buttons and the Device menu.
     private func availability(sheetOpen: Bool = false) -> DeviceActionAvailability {
         DeviceActionAvailability(device: device, busy: isBusy || sheetOpen, editingAssetTag: editingAssetTag,
-                                 connectedDeviceCount: connectedDeviceCount,
+                                 portRefusal: portRefusal,
                                  configuratorAvailable: actions.isConfiguratorAvailable,
                                  jamfState: jamf.state(for: device),
                                  appleState: appleBusiness.isConfigured ? appleBusiness.state(forSerial: knownSerial) : nil)
@@ -189,9 +185,8 @@ struct DeviceDetailView: View {
                     Label("Restart", systemImage: "restart")
                 }
                 .disabled(!can.restart)
-                .help(vdmUnavailable
-                      ? Self.vdmUnavailableHelp
-                      : "Force-restart over USB-C power delivery — requires an administrator password")
+                .help(portRefusal?.message
+                      ?? "Force-restart over this device’s USB-C port — requires an administrator password")
 
                 if offers.enterDFU {
                     Button {
@@ -200,9 +195,8 @@ struct DeviceDetailView: View {
                         Label("Enter DFU", systemImage: "bolt.horizontal")
                     }
                     .disabled(!can.enterDFU)
-                    .help(vdmUnavailable
-                          ? Self.vdmUnavailableHelp
-                          : "Reboot into DFU mode over USB-C power delivery — requires an administrator password")
+                    .help(portRefusal?.message
+                          ?? "Reboot into DFU mode over this device’s USB-C port — requires an administrator password")
                 }
 
                 if offers.restore {
@@ -242,8 +236,24 @@ struct DeviceDetailView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if let waiting = actions.waitingForReturn {
+                Text(waiting == .dfu ? "Waiting for the device to come back in DFU mode…"
+                                     : "Waiting for the device to come back…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let note = actions.lastNote {
+                TintedLabel(note, systemImage: "info.circle", tint: .blue)
+                    .font(.caption)
+            }
+
             if actions.trustRequiredDeviceID == device.id {
                 trustGuidance
+            }
+
+            if device.modelInfo?.isMac == true {
+                macDFUTips
             }
 
             if let error = actions.lastError {
@@ -276,18 +286,32 @@ struct DeviceDetailView: View {
         .padding(.vertical, 4)
     }
 
+    /// For a Mac: from Apple's "How to revive or restore Mac firmware"
+    /// (support.apple.com/108900) and "How to identify the DFU port on Mac"
+    /// (support.apple.com/120694).
+    private var macDFUTips: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("For DFU mode, connect the cable to this device’s DFU port (which port depends on the model) and leave its other USB ports empty except for power. If the Mac running Serial Number Reader asks to allow the accessory to connect, click Allow.",
+                  systemImage: "lightbulb")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Link("How to identify the DFU port on Mac", destination: Self.macDFUPortPage)
+                .font(.callout)
+        }
+    }
+
+    static let macDFUPortPage = URL(string: "https://support.apple.com/120694")!
+
     /// Why Restore and Revive can't run for this device, or nil when they can.
     private var restoreUnavailableReason: String? {
         DeviceActionAvailability.restoreUnavailableReason(device: device, configuratorAvailable: actions.isConfiguratorAvailable)
     }
 
-    /// The USB-PD command goes to a port, not a device, so with several
-    /// devices attached it could hit the wrong one — offer it only for one.
-    /// (The root helper refuses too when more than one port has something.)
-    private var vdmUnavailable: Bool { DeviceActionAvailability.vdmUnavailable(connectedDeviceCount: connectedDeviceCount) }
-
-    private static let vdmUnavailableHelp =
-        "Disabled while more than one device is connected — the USB-C command targets a port, not a specific device"
+    /// Why Restart and Enter DFU can't reach this device: its own USB-C port
+    /// can't be found (a hub, a dock, an Intel Mac); nil when they can.
+    private var portRefusal: USBCPort.Refusal? {
+        device.isConnected ? actions.portRefusal(for: device) : nil
+    }
 
     /// Short: each button's help says the rest.
     private var actionsFooterText: String {
@@ -299,8 +323,8 @@ struct DeviceDetailView: View {
         case .dfu:
             "Restore erases the device; Revive keeps its content. Both use Apple Configurator. Restart needs a USB-C device and an administrator password."
         }
-        if vdmUnavailable {
-            text += " With more than one device connected, Restart and Enter DFU are off: they target a port, not a device."
+        if let portRefusal {
+            text += " Restart and Enter DFU are off: " + portRefusal.message
         }
         if PretendIPhone.isPretend(device) {
             text += " Demo Mode: every action is simulated."
@@ -410,6 +434,13 @@ struct DeviceDetailView: View {
             switch appleBusiness.state(forSerial: knownSerial) {
             case .notConfigured:
                 EmptyView()
+
+            case .incomplete(let message):
+                Label(message, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.secondary)
+                SettingsLink {
+                    Text("Open Settings…")
+                }
 
             case .unavailable(let reason):
                 Text(reason)
@@ -862,11 +893,14 @@ nonisolated struct DeviceActionAvailability: Equatable {
     ///   - busy: an action or a Restore/Revive runs, or (for the Device
     ///     menu) the Restore or Revive sheet is open.
     ///   - editingAssetTag: the asset tag editor is open.
-    init(device: USBDevice, busy: Bool, editingAssetTag: Bool, connectedDeviceCount: Int,
+    ///   - portRefusal: why the device's own USB-C port can't be reached
+    ///     (`USBCPort`); nil when Restart and Enter DFU can go to it.
+    init(device: USBDevice, busy: Bool, editingAssetTag: Bool, portRefusal: USBCPort.Refusal?,
          configuratorAvailable: Bool, jamfState: JamfLookupState, appleState: AppleBusinessLookupState? = nil) {
         let offers = Offers(device: device)
         let ready = device.isConnected && !busy
-        let vdm = ready && !Self.vdmUnavailable(connectedDeviceCount: connectedDeviceCount)
+        // Offered for every device whose own port is known, whatever else is connected.
+        let vdm = ready && portRefusal == nil
         enterRecovery = ready && offers.enterRecovery
         bootToNormal = ready && offers.bootToNormal
         restart = vdm
@@ -881,16 +915,11 @@ nonisolated struct DeviceActionAvailability: Equatable {
         }
         let appleRetry = switch appleState {
         case .found, .notInOrganization, .failed: true
-        case .notConfigured, .unavailable, .loading, nil: false
+        case .notConfigured, .incomplete, .unavailable, .loading, nil: false
         }
         retryLookup = jamfRetry || appleRetry
         removeFromList = !device.isConnected && !editingAssetTag
     }
-
-    /// The USB-PD command goes to a port, not a device, so with several
-    /// devices attached it could hit the wrong one — offer it only for one.
-    /// (The root helper refuses too when more than one port has something.)
-    static func vdmUnavailable(connectedDeviceCount: Int) -> Bool { connectedDeviceCount > 1 }
 
     /// Why Restore and Revive can't run for this device, or nil when they can.
     static func restoreUnavailableReason(device: USBDevice, configuratorAvailable: Bool) -> String? {

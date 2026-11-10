@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Restart and Enter DFU go only to the selected device’s own USB-C port.**
+  A charger, a display or another device on another port no longer blocks
+  them, and they’re offered for every device connected directly to the Mac.
+  A device behind a hub, dock or adapter is refused, with the advice to
+  connect it directly. When the app can’t tell which port a device is on,
+  the buttons are dimmed with the reason before any password is asked.
+- **Success only once the device is back:** after Restart, Enter DFU and
+  Restore, the app waits until the same device appears again in the expected
+  mode, and says clearly when it doesn’t come back. When a device doesn’t
+  confirm Restart or Enter DFU, the app watches for it for 30 seconds before
+  reporting a problem.
+- **Mac DFU tips:** for a Mac, the Actions section explains that DFU mode
+  works through the Mac’s DFU port, with a link to Apple’s page that shows
+  where it is, and to click Allow when your Mac asks to allow the accessory
+  to connect.
+- The Apple Business or Apple School Manager section says what an incomplete
+  Apple account is missing, with a button to open Settings.
+
+### Changed
+
+- Restart and Enter DFU are unavailable on an Intel Mac, with the reason
+  shown, instead of asking for a password first.
+- **Export for Bug Report…** in the activity log also masks Apple’s order
+  number and the reseller’s ID.
+- A device management service added in Apple Business or Apple School
+  Manager since the app last read the list is shown by its name.
+
+### Fixed
+
+- When the saved Apple accounts can’t be read, the Jamf connections still
+  load, and the other way round. Nothing is saved over the list that can’t
+  be read, and Settings › Connections says which one it is.
+
 ## 1.6.0 — 2026-11-10
 
 ### New

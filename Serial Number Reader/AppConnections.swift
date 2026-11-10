@@ -76,10 +76,39 @@ nonisolated enum AppConnection: ConnectionRecord {
 /// connections come first in the shared list. A list whose entries didn't
 /// change is never written, so saving an Apple account leaves
 /// `jamfConnections` exactly as it was, for older versions too.
+///
+/// Each list loads on its own: when one can't be read, the other still
+/// loads. The unreadable one is copied once, never written (a save that
+/// would put entries in it is refused) and reported in `partialProblem`.
+/// Only when neither can be read does loading fail, and JTKit's store
+/// refuses every save.
 @MainActor
 final class AppConnectionStorage: ConnectionStorage {
     private let jamf: UserDefaultsConnectionStorage<JamfConnection>
     private let apple: UserDefaultsConnectionStorage<AppleBusinessConnection>
+
+    /// The list that couldn't be read while the other could; nil otherwise.
+    struct PartialProblem: Equatable {
+        /// "Jamf connections" or "Apple accounts".
+        let list: String
+        let other: String
+        let detail: String
+        /// Where the copy of the unreadable data is.
+        let copy: String?
+
+        var message: String {
+            let copyNote = copy.map { " A copy is at \($0)." } ?? ""
+            return "The saved \(list) couldn’t be read, so they aren’t shown and nothing is saved over them (\(detail)).\(copyNote) The \(other) are loaded as usual."
+        }
+
+        var refusal: ConnectionStoreError {
+            .couldNotSave("the saved \(list) couldn’t be read, so nothing is saved into them until this is fixed.")
+        }
+    }
+
+    private(set) var partialProblem: PartialProblem?
+    private var jamfUnreadable = false
+    private var appleUnreadable = false
 
     init(defaults: UserDefaults) {
         jamf = UserDefaultsConnectionStorage(key: AppConnectionStore.listKey, defaults: defaults)
@@ -87,20 +116,44 @@ final class AppConnectionStorage: ConnectionStorage {
     }
 
     func load() throws -> [AppConnection] {
-        try jamf.load().map(AppConnection.jamf) + apple.load().map(AppConnection.apple)
+        let jamfRecords = Result { try jamf.load() }
+        let appleRecords = Result { try apple.load() }
+        switch (jamfRecords, appleRecords) {
+        case (.failure(let error), .failure):
+            // Neither: JTKit's store keeps copies and refuses every save.
+            throw error
+        case (.success(let jamfList), .success(let appleList)):
+            (jamfUnreadable, appleUnreadable, partialProblem) = (false, false, nil)
+            return jamfList.map(AppConnection.jamf) + appleList.map(AppConnection.apple)
+        case (.failure(let error), .success(let appleList)):
+            (jamfUnreadable, appleUnreadable) = (true, false)
+            partialProblem = PartialProblem(list: "Jamf connections", other: "Apple accounts",
+                                            detail: error.localizedDescription, copy: jamf.keepUnreadableCopy())
+            return appleList.map(AppConnection.apple)
+        case (.success(let jamfList), .failure(let error)):
+            (jamfUnreadable, appleUnreadable) = (false, true)
+            partialProblem = PartialProblem(list: "Apple accounts", other: "Jamf connections",
+                                            detail: error.localizedDescription, copy: apple.keepUnreadableCopy())
+            return jamfList.map(AppConnection.jamf)
+        }
     }
 
-    /// Each entry goes back to its own list, in the order of the shared list.
+    /// Each entry goes back to its own list, in the order of the shared
+    /// list. An unreadable list is never written.
     func save(_ records: [AppConnection]) throws {
         let jamfRecords = records.compactMap(\.jamf)
         let appleRecords = records.compactMap(\.apple)
-        if (try? jamf.load()) != jamfRecords { try jamf.save(jamfRecords) }
-        if (try? apple.load()) != appleRecords { try apple.save(appleRecords) }
+        if let partialProblem, (jamfUnreadable && !jamfRecords.isEmpty) || (appleUnreadable && !appleRecords.isEmpty) {
+            throw partialProblem.refusal
+        }
+        if !jamfUnreadable, (try? jamf.load()) != jamfRecords { try jamf.save(jamfRecords) }
+        if !appleUnreadable, (try? apple.load()) != appleRecords { try apple.save(appleRecords) }
     }
 
+    /// The unreadable list already has its copy (`load`).
     func backUpOnce() throws {
-        try jamf.backUpOnce()
-        try apple.backUpOnce()
+        if !jamfUnreadable { try jamf.backUpOnce() }
+        if !appleUnreadable { try apple.backUpOnce() }
     }
 
     /// Copies only the list that can't be read.
@@ -215,6 +268,11 @@ final class AppConnectionStore {
         didSet { defaults.set(activeAppleID?.uuidString, forKey: Self.appleActiveKey) }
     }
 
+    /// One of the two lists couldn't be read while the other loaded: it is
+    /// left as it was, a copy is kept, and nothing is saved into it. For
+    /// Settings › Connections; nil when both lists were read.
+    let listProblem: String?
+
     /// Why the settings of an earlier version weren't converted at this
     /// launch (e.g. the Keychain refused to read an old secret), for Settings
     /// › Connections; nil when there was nothing to convert or it worked.
@@ -271,8 +329,9 @@ final class AppConnectionStore {
             }
         })
         let location = SecretLocation(store: routed, account: AppConnectionSecrets.account(for:))
+        let storage = AppConnectionStorage(defaults: defaults)
         connections = ConnectionStore(
-            storage: AppConnectionStorage(defaults: defaults),
+            storage: storage,
             secrets: [.main: location],
             log: log,
             liveRecord: AppConnection.live
@@ -280,6 +339,8 @@ final class AppConnectionStore {
         // The same choice JTKit's store makes: under the live-check switch
         // the run's own secrets, by connection ID.
         secretLocation = LiveLaunch.isSwitched ? SecretLocation(store: LiveLaunch.secrets(for: .main)) : location
+        listProblem = LiveLaunch.isSwitched ? nil : storage.partialProblem?.message
+        if let listProblem { log("[Connections] \(listProblem)") }
 
         let jamfIDs = connections.records.compactMap(\.jamf).map(\.id)
         let appleIDs = connections.records.compactMap(\.apple).map(\.id)

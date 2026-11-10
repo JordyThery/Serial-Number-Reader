@@ -26,7 +26,7 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 - **Several saved connections** — Jamf connections and Apple accounts in one list in **Settings › Connections**. Switch the Jamf connection, and the Apple account, with the pickers in the toolbar or the **Connection** menu.
 - **Mode switching without button presses** — send a booted device into Recovery mode (and read its serial hands-free), boot a Recovery-mode device back to normal, or Restart / Enter DFU a USB-C device, even when it’s unresponsive.
 - **Session export** — save every device from the session as CSV (**File › Export Session…**, ⌘E), or copy all serial numbers at once (**File › Copy All Serial Numbers**, ⇧⌘C). **Clear Disconnected** (toolbar and File menu) and **Remove from List** (right-click, the Delete key, or **Device › Remove from List**, ⌘⌫) tidy the list.
-- **Activity log** — **Window › Activity Log** (⇧⌘L) lists every sign-in, lookup, asset tag change, connection test and USB action. **Export for Bug Report…** replaces serial numbers, UDIDs, ECIDs, usernames and IP addresses with placeholders; **Export Unmasked…** and **Copy Entry** keep them. The log is kept in memory only.
+- **Activity log** — **Window › Activity Log** (⇧⌘L) lists every sign-in, lookup, asset tag change, connection test and USB action. **Export for Bug Report…** replaces serial numbers, UDIDs, ECIDs, Apple order numbers and reseller IDs, usernames and IP addresses with placeholders; **Export Unmasked…** and **Copy Entry** keep them. The log is kept in memory only.
 - **Demo Mode** — try the app without a device or a Jamf tenant: a pretend iPhone, the sample Jamf servers “Contoso Jamf Pro (Demo)” and “Contoso Academy (Demo)”, and the sample Apple Business organization “Contoso (Demo)”. Every action on the pretend iPhone is simulated; nothing is sent to a device or a tenant, and real devices are hidden while it’s on. Turn it on with **Try Demo Mode** in the sidebar when no device is connected, or with **Demo Mode** in the toolbar’s connection picker or the **Connection** menu (dimmed while an action or restore runs).
 - **Device menu** — the selected device’s actions (Enter Recovery, Boot to Normal, Restart, Enter DFU, Restore…, Revive…, Remove Trust, Retry Lookup ⌘R) are also in the menu bar, for the keyboard and Full Keyboard Access.
 - **Copy buttons** and a scannable **QR code** for the serial number.
@@ -34,7 +34,7 @@ A native macOS app that identifies connected iPhones, iPads and Macs by serial n
 ## Requirements
 
 - macOS 14 or later.
-- USB-C power actions (Restart / Enter DFU) require an Apple silicon Mac host and a USB-C target device, and prompt for an administrator password. They work only while one device is connected, and nothing else may be connected to another USB-C port of the Mac (no second device, hub or USB-C charger; charging with MagSafe is fine): the command goes to a port, not to a device.
+- USB-C power actions (Restart / Enter DFU) require a Mac with Apple silicon (they’re unavailable on an Intel Mac) and a USB-C target device connected **directly** to a USB-C port of the Mac, and prompt for an administrator password. The command goes only to the selected device’s own port, so other devices, chargers and displays on other ports don’t matter; a device behind a hub, dock or adapter is refused, because the command would reach the hub instead. Before asking for the password, the app checks which port the device is on and dims the buttons with the reason when it can’t tell.
 - Restore, Revive, Remove Trust and DFU identification require [Apple Configurator](https://apps.apple.com/app/apple-configurator/id1037126344) (free). Serial Number Reader uses its command-line tool; no setup is needed.
 
 ## Installation
@@ -52,6 +52,10 @@ Connect a device over USB. It appears in the sidebar with its mode; select it to
 | DFU | Model, ECID and UDID via Apple Configurator; Jamf record; steps to enter Recovery mode | Restore · Revive · Restart |
 
 Enter Recovery, Boot to Normal, Restore and Revive need no administrator password; Restart and Enter DFU use USB-C power delivery and prompt for one. Before asking, the app checks that its own app on disk is the signed one that is running. Only one action runs at a time, and none while a Restore or Revive runs.
+
+After Restart, Enter DFU and Restore the app waits until the same device (by its ECID) appears again in the expected mode, and only then reports success; when the device doesn’t come back, it says so. A restarted iPhone or iPad appears again only once it’s unlocked, and a Mac that starts up normally doesn’t appear on USB at all.
+
+> **Mac DFU:** connect the cable to the Mac’s DFU port, which depends on the model ([How to identify the DFU port on Mac](https://support.apple.com/120694)), leave its other USB ports empty except for power, and click **Allow** if your Mac asks to allow the accessory to connect.
 
 > **iOS 27 and later:** Enter Recovery only works from a Mac the device trusts. Unlock the device and tap **Trust** once, or enter Recovery mode with the buttons — the app shows the steps for the model. **Remove Trust** deletes the pairing again afterward.
 

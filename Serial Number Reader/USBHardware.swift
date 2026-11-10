@@ -15,8 +15,12 @@ nonisolated protocol USBHardware: Sendable {
     func enterRecovery(udid: String) throws
     /// iBoot commands to a Recovery-mode device; nil when sent, else the message.
     func sendRecoveryCommands(_ commands: [String], toRegistryEntryID entryID: UInt64) -> String?
-    /// Restart or Enter DFU over USB-C (`reboot` or `dfu`), through the administrator prompt.
-    func runPrivilegedVDM(_ action: String) -> DeviceActionController.Outcome
+    /// Which USB-C port of this Mac the device with this registry entry is
+    /// on (IORegistry reads only, no privileges; `USBCPort`).
+    func usbCPort(forEntryID entryID: UInt64) -> USBCPort.Check
+    /// Restart or Enter DFU over USB-C (`reboot` or `dfu`) to this device's
+    /// own port, through the administrator prompt.
+    func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> DeviceActionController.Outcome
     /// Whether Apple Configurator (and so `cfgutil`) is installed.
     var isConfiguratorAvailable: Bool { get }
     func listConfiguratorDevices() throws -> [ConfiguratorDevice]
@@ -56,10 +60,17 @@ nonisolated struct LiveUSBHardware: USBHardware {
         return RecoveryCommands.send(commands, toRegistryEntryID: entryID)
     }
 
-    func runPrivilegedVDM(_ action: String) -> DeviceActionController.Outcome {
+    func usbCPort(forEntryID entryID: UInt64) -> USBCPort.Check {
+        guard !PretendIPhone.isPretend(id: entryID) else { return .failure(.notAppleDevice) }
+        if underTest.refusal(for: "USB-C port check") != nil { return .failure(.underTest) }
+        return USBCPort.locate(deviceEntryID: entryID, in: LiveUSBCPortRegistry(), isAppleSilicon: USBCPort.isAppleSilicon)
+    }
+
+    func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> DeviceActionController.Outcome {
+        guard !PretendIPhone.isPretend(id: deviceEntryID) else { return .failed(PretendIPhone.refusal) }
         let name = action == "dfu" ? "Enter DFU" : "Restart"
         if let refusal = underTest.refusal(for: "\(name) (VDM \(action))") { return .failed(refusal) }
-        return DeviceActionController.runPrivilegedVDM(action)
+        return DeviceActionController.runPrivilegedVDM(action, deviceEntryID: deviceEntryID)
     }
 
     /// Only looks for Apple Configurator on disk; reaches no device.

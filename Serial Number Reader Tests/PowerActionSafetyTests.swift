@@ -96,7 +96,7 @@ struct PowerActionSafetyTests {
         actions.restart(device: recoveryDevice)
         #expect(actions.runningAction == nil)
         #expect(actions.lastError == DeviceActionController.restoreRunning)
-        #expect(!hardware.calls.contains("VDM reboot"))
+        #expect(!hardware.calls.contains { $0.hasPrefix("VDM") })
         continuation.finish()
         await job.value
 

@@ -72,8 +72,7 @@ struct ContentView: View {
                         appleBusiness: appleBusiness,
                         actions: actions,
                         restore: restore,
-                        monitor: monitor,
-                        connectedDeviceCount: monitor.devices.count(where: \.isConnected)
+                        monitor: monitor
                     )
                     .id(device.id) // reset per-device view state on selection change
                 } else {

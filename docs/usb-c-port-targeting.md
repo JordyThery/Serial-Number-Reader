@@ -112,10 +112,30 @@ AppleUSB30XHCIARMPort usb-drd2-port-ss    UsbIOPort = …/hpm2@8/…/Port-USB-C@
 | DFU, classic (0x1227) and "Debug USB" (0x1881) | Not tested. Same expectation as Recovery. To confirm on hardware. |
 | Through a USB hub | Not tested, but it **must be refused** anyway: a VDM goes over the CC line of the Mac's own port, so it reaches whatever is plugged directly into that port (the hub), never a device behind it. The walk would still find the hub's port, so the check needs an extra rule: the device's direct parent must be the root port. |
 | Through a Thunderbolt / USB4 dock | Not tested. USB then runs through the dock's own controller over a PCIe tunnel, so the chain is expected to have no `UsbIOPort`. That means refused, which is correct for the same reason as a hub. |
-| Lightning device on a USB-C to Lightning cable | Maps to a port (USB 2 root port), but Lightning can't take VDMs; the app already doesn't offer the actions there. |
+| Lightning device on a USB-C to Lightning cable | Maps to a port (USB 2 root port), but Lightning can't take VDMs. The app offers the buttons (it can't tell the connector from USB), and the button help says a USB-C device is needed; the device simply doesn't answer. |
 | A device the app can't see (a locked iPhone before first unlock, a booted Mac on a cable) | No USB entry, so no target. That's the point: such a device on another port is never reached, where today it only counts towards the refusal. |
-| Intel Mac | Not tested; no Intel Mac available. `VDMTool`'s unlock key (the Apple Silicon board name) and the ACE2 sequence are Apple Silicon only, and the app needs macOS 27. As far as I know, macOS 26 was the last release for Intel Macs. So the Intel path doesn't apply today. |
+| Intel Mac | Not tested; no Intel Mac available. **Correction:** the app runs on macOS 14 and later (the 27.0 in the project file is only the project default; the app target is 14.0), and the released app is universal (Intel and Apple silicon), so an Intel Mac on macOS 14, 15 or 26 does run it. See "Intel Macs" below. |
 | Other Apple Silicon models (Mac mini, Mac Studio, iMac, front ports, MacBook Air) | Not tested. The refusal rules cover a model where the property is missing. Worth one `ioreg` reading on each model Jordy has. |
+
+## Intel Macs
+
+What 1.6.0 does there, read from the code (not tested on hardware): Restart
+and Enter DFU are offered like on Apple silicon, and clicking one asks for the
+administrator password. The root helper then reads the Mac's model name as the
+port controller's unlock key (on Apple silicon the board name; on an Intel Mac
+something else), lists the `AppleHPM` services (Intel Macs with Thunderbolt 3
+have them, with other port controllers), and, when exactly one port has
+something connected, tries to unlock that controller and send the VDM. The
+unlock key and the command sequence are meant for Apple silicon's
+controllers, so the most likely result is "Couldn't unlock the USB-C port",
+but what an Intel controller does with them is unknown. Whether Intel Macs have
+`UsbIOPort` on their USB ports is not known either.
+
+From 1.7.0 Restart and Enter DFU are unavailable on an Intel Mac: the app
+checks for Apple silicon (`hw.optional.arm64`, also true under Rosetta) before
+anything else and dims the buttons with the reason ("Restart and Enter DFU
+work only on a Mac with Apple silicon"); the root helper refuses on its own
+too (exit 5), also in the form without a device.
 
 ## Proposal
 
@@ -181,3 +201,30 @@ device is attached.
 - A hub and a Thunderbolt dock: confirm the chain shows the hub/dock between,
   so the check refuses.
 - One reading on each other Apple Silicon model available.
+
+## Decided and built (1.7.0, Jordy, 2026-11-10)
+
+- The app passes the selected device's registry entry ID: `--vdm reboot|dfu
+  --entry <hex>`. `MyApp.main` hands any launch with `--vdm` to
+  `PrivilegedVDM`, which accepts only that form or the form without a device
+  (`--vdm reboot|dfu`) and exits 1 on anything else; the GUI never starts as root.
+- The chain is `USBCPort.locate` (steps 2 to 5), run in the app without
+  privileges to dim the buttons with the reason, and again by the helper as
+  root. The helper opens only that controller (`VDMTool
+  runWithAction:onControllerWithEntryID:recheck:`), reads register 0x3f on it
+  only, and runs the chain once more just before sending (step 7).
+- Strict, not the fallback: an incomplete chain (a hub, a dock, an adapter, a
+  Mac model without the property) is refused with "connect the device
+  directly to a USB-C port of this Mac". A hub anywhere above the device is
+  refused even if a port would resolve.
+- A device without a USB entry (a booted Mac on a cable) keeps the rule of one
+  connected port, in the helper (`--vdm` without `--entry`). The app has no
+  button for such a device today; it always passes a device.
+- The buttons are offered for every device whose own port is known, whatever
+  else is connected.
+- Exit codes: 5 = refused by the port check, or the port changed before
+  sending; 6 = sent, but the device's reply was missed. After 6, and after a
+  normal send, the app watches for the same device (`DeviceReturnWatch`).
+- Tests: `USBCPortTests` and `PrivilegedVDMTests` on made-up registry data
+  (every refusal above, two devices, a charger, port numbers as bytes, a loop
+  in the registry). The real send stays a manual hardware check.
