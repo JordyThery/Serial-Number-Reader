@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Deleting a connection or an Apple account whose Keychain item can’t be
+  removed** (for example while the Keychain is locked) now keeps the
+  connection and says why, instead of removing it from the list and leaving
+  its secret behind in the Keychain. Unlock the Keychain and delete it again.
+
 ## 1.7.0 — 2026-11-11
 
 ### New
