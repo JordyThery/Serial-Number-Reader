@@ -195,12 +195,36 @@ side accepting only `--vdm reboot|dfu`, VDMTool refusing when more than one
 port reports a connection, and the UI offering the actions only while one
 device is attached.
 
+## Confirmed on hardware (Jordy, 2026-11-11)
+
+The 1.7.0 build of commit c35883b (still numbered 1.6.0 (8)), on the host Mac
+of the investigation: MacBook Pro 14-inch, M3 Pro (Mac15,6), macOS 27.2.1
+(26B131). Every Restart and Enter DFU went through the real administrator
+prompt and the root helper's own chain check. Results from Jordy's hand check;
+the activity log covers part A.
+
+| Step | Target and mode before | Result |
+| --- | --- | --- |
+| A1–A3 | iPhone 17e (USB-C), booted, with a USB-C charger on another port | Restart offered and sent; locked: orange "Sent; unlock the device to see it again", logged as a warning after the 2-minute wait; unlocked: back; Stop Waiting works. The charger didn't block anything. |
+| A4 | iPhone 17e, booted | Enter DFU: back in DFU mode ("Debug USB" 0x1881) after 14 s. |
+| A5 | iPhone 17e, DFU (Debug USB) | Restart: the device started up locked, so "not confirmed" after 2 minutes (132 s), as designed. |
+| A6 | iPhone 17e, Recovery (0x1281) | Restart: back in Recovery (18 s); Enter DFU: back in DFU (11 s). |
+| A7 | iPhone 17e, booted, on each other USB-C port | Enter DFU worked on every port. |
+| B8 | iPhone 17e through a USB hub | Both buttons dimmed with "Connect the device directly to the Mac"; no password asked. |
+| B9 | iPhone 17e through a Thunderbolt dock | Refused the same way. |
+| B10 | Plugged back in directly | Buttons available again within seconds. |
+| C11 | Restore from Recovery | "Restored" only once the device had started up. |
+| D12–D13 | Apple silicon Mac in Recovery, on its DFU port | Tip and link shown in Recovery; Enter DFU: back in DFU mode, tip gone. |
+
+So the chain is confirmed in normal mode, Recovery, Debug USB DFU and for a
+Mac target, on all USB-C ports of this Mac, and a hub and a Thunderbolt dock
+are refused.
+
 ## Still to confirm on hardware
 
-- Recovery and both kinds of DFU: same reading, device on two different ports.
-- A hub and a Thunderbolt dock: confirm the chain shows the hub/dock between,
-  so the check refuses.
-- One reading on each other Apple Silicon model available.
+- Classic DFU (0x1227), e.g. a 2018–2020 USB-C iPad Pro.
+- Another Apple silicon Mac model as the host.
+- With VoiceOver on, the announcement at the end of a wait.
 
 ## Decided and built (1.7.0, Jordy, 2026-11-10)
 
