@@ -58,8 +58,8 @@ FINGERPRINT_PATHS=("$HOME/Library/Application Support/Serial Number Reader"
 KEYCHAIN_PREFIXES=("be.jordythery.SerialNumberReader.jamf" "be.jordythery.SerialNumberReader.appleBusiness")
 
 # --fault usb-attempt sends one Restart through the app's real doorway (the
-# guard refuses it). Restart targets the first port with a device, so this
-# fault starts only when no Apple device is connected over USB.
+# guard refuses it, for a made-up device). As a second safeguard, this fault
+# starts only when no Apple device is connected over USB.
 if [[ " $* " == *" --fault usb-attempt "* ]]; then
     connected="$(/usr/sbin/ioreg -r -c IOUSBHostDevice -l -w0 | /usr/bin/python3 -c '
 import re, sys
@@ -79,7 +79,7 @@ print("\n".join("%s (0x%04X)" % (d["name"], d["idProduct"]) for d in devices
                 if d.get("idVendor") == 0x05AC and target(d.get("idProduct", -1))))
 ')" || { print -u2 "Couldn't list USB devices with ioreg; --fault usb-attempt doesn't start."; exit 2 }
     if [[ -n "$connected" ]]; then
-        print -u2 "--fault usb-attempt refused: an Apple device is connected over USB, and Restart targets the first port with a device."
+        print -u2 "--fault usb-attempt refused: an Apple device is connected over USB."
         print -u2 "Unplug it and start again. Connected:"
         print -u2 -- "$connected"
         exit 2

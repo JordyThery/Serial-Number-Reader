@@ -104,7 +104,7 @@ struct DeviceListTests {
         let actions = DeviceActionController.preview
         #expect(!actions.isConfiguratorAvailable || PreviewSupport.usb.isOn)
         let hardware = NoUSBHardware()
-        #expect(hardware.runPrivilegedVDM("reboot") == .failed(NoUSBHardware.refusal))
+        #expect(hardware.runPrivilegedVDM("reboot", deviceEntryID: 0x1000_0A01) == .failed(NoUSBHardware.refusal))
         #expect(hardware.sendRecoveryCommands(["reboot"], toRegistryEntryID: 1) == NoUSBHardware.refusal)
         #expect(throws: Configurator.Failure.self) { try hardware.enterRecovery(udid: "x") }
         #expect(throws: Configurator.Failure.self) { try hardware.listConfiguratorDevices() }

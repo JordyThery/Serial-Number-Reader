@@ -23,7 +23,17 @@ nonisolated final class TrapHardware: USBHardware, @unchecked Sendable {
         note("Recovery commands")
         return nil
     }
-    func runPrivilegedVDM(_ action: String) -> DeviceActionController.Outcome { note("VDM \(action)"); return .done }
+    /// What the port check and the VDM answer; a test can change them.
+    var portCheck: USBCPort.Check = .success(.init(controllerID: 0x1000_0561, rid: 1, portNumber: 2))
+    var vdmOutcome: DeviceActionController.Outcome = .done
+    func usbCPort(forEntryID entryID: UInt64) -> USBCPort.Check {
+        note("USB-C port check")
+        return lock.withLock { portCheck }
+    }
+    func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> DeviceActionController.Outcome {
+        note("VDM \(action) \(String(deviceEntryID, radix: 16))")
+        return lock.withLock { vdmOutcome }
+    }
     var isConfiguratorAvailable: Bool { note("Configurator lookup"); return true }
     func listConfiguratorDevices() throws -> [ConfiguratorDevice] { note("cfgutil list"); return [] }
     func unpair(ecid: String) throws { note("cfgutil unpair") }

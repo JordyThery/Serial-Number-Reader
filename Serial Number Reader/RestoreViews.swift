@@ -189,7 +189,8 @@ struct RestoreSheet: View {
         guard let ecid = device.configuratorECID else { return }
         // A refused start keeps the sheet open and says why.
         if restore.start(.restore(ipsw: source == .ipsw ? ipswURL : nil),
-                         ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber) != nil {
+                         ecid: ecid, deviceName: device.modelDisplayName, serialNumber: device.serialNumber,
+                         isMac: device.modelInfo?.isMac == true) != nil {
             dismiss()
         } else {
             refusal = restore.refusal ?? "The restore couldn’t start."
@@ -336,6 +337,11 @@ struct RestoreBanner: View {
             .padding(12)
             .background(.regularMaterial, in: .rect(cornerRadius: 10))
             .padding([.horizontal, .top], 12)
+            // A restore takes minutes: VoiceOver hears how it ended.
+            .onChange(of: job.state) { old, new in
+                guard old == .running, new != .running else { return }
+                AccessibilityNotification.Announcement("\(title(for: job)). \(detail(for: job))").post()
+            }
         }
     }
 
@@ -356,8 +362,9 @@ struct RestoreBanner: View {
             let percent = job.fraction.map { " · \(Int(($0 * 100).rounded()))%" } ?? ""
             return job.step + percent
         case .succeeded:
+            if let note = job.note { return note }
             return job.kind == .restore
-                ? "The device restarts into Setup Assistant."
+                ? "The device is back and shows Setup Assistant."
                 : "The device restarts with its content in place."
         case .failed(let message):
             return message

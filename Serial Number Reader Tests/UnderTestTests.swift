@@ -35,8 +35,9 @@ struct UnderTestTests {
         #expect(!live.hasPairRecord(udid: udid))
         #expect(throws: Configurator.Failure.self) { try live.enterRecovery(udid: udid) }
         #expect(live.sendRecoveryCommands(["reboot"], toRegistryEntryID: 0xA11CE) == UnderTest.refusal)
-        #expect(live.runPrivilegedVDM("reboot") == .failed(UnderTest.refusal))
-        #expect(live.runPrivilegedVDM("dfu") == .failed(UnderTest.refusal))
+        #expect(live.usbCPort(forEntryID: 0x1000_0A01) == .failure(.underTest))
+        #expect(live.runPrivilegedVDM("reboot", deviceEntryID: 0x1000_0A01) == .failed(UnderTest.refusal))
+        #expect(live.runPrivilegedVDM("dfu", deviceEntryID: 0x1000_0A01) == .failed(UnderTest.refusal))
         #expect(throws: Configurator.Failure.self) { try live.listConfiguratorDevices() }
         #expect(throws: Configurator.Failure.self) { try live.unpair(ecid: ecid) }
         await #expect(throws: Configurator.Failure.self) {
@@ -48,7 +49,7 @@ struct UnderTestTests {
 
         #expect(log.attempts().map(\.what) == [
             "lockdown read", "pair record check", "Enter Recovery", "Boot to Normal (Recovery commands)",
-            "Restart (VDM reboot)", "Enter DFU (VDM dfu)", "cfgutil list", "Remove Trust (cfgutil unpair)",
+            "USB-C port check", "Restart (VDM reboot)", "Enter DFU (VDM dfu)", "cfgutil list", "Remove Trust (cfgutil unpair)",
             "Restore (cfgutil)", "Revive (cfgutil)",
         ])
     }

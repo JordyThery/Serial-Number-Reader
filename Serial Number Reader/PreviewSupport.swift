@@ -22,7 +22,8 @@ nonisolated struct NoUSBHardware: USBHardware {
     func hasPairRecord(udid: String) -> Bool { false }
     func enterRecovery(udid: String) throws { throw Configurator.Failure(message: Self.refusal) }
     func sendRecoveryCommands(_ commands: [String], toRegistryEntryID entryID: UInt64) -> String? { Self.refusal }
-    func runPrivilegedVDM(_ action: String) -> DeviceActionController.Outcome { .failed(Self.refusal) }
+    func usbCPort(forEntryID entryID: UInt64) -> USBCPort.Check { .failure(.portUnknown) }
+    func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> DeviceActionController.Outcome { .failed(Self.refusal) }
     var isConfiguratorAvailable: Bool { false }
     func listConfiguratorDevices() throws -> [ConfiguratorDevice] { throw Configurator.Failure(message: Self.refusal) }
     func unpair(ecid: String) throws { throw Configurator.Failure(message: Self.refusal) }

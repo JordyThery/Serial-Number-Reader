@@ -8,9 +8,11 @@ import os
 ///   AppleHPM port-controller interface. Requires root, so the app re-launches
 ///   its own executable with `--vdm <action>` through an administrator prompt,
 ///   after checking that the executable on disk is the signed app that runs.
-///   The command targets a port, not a device: the UI only offers it while a
-///   single device is attached, and the root helper refuses when more than
-///   one USB-C port has something connected.
+///   The command goes to the selected device's own USB-C port (`USBCPort`):
+///   the app checks the chain before the prompt and the root helper checks
+///   it again itself; a device behind a hub or dock is refused. Afterwards the
+///   app watches for the same device (by ECID) to come back in the expected
+///   mode, and reports success only then (`DeviceReturnWatch`).
 /// - **Enter Recovery** — lockdownd `EnterRecovery` over usbmuxd for a booted
 ///   device. No privileges required; on iOS 27 and later only over the
 ///   pairing of a Mac the device already trusts.
@@ -57,6 +59,25 @@ final class DeviceActionController {
             }
         }
 
+        /// Sent, but the device wasn't seen to come back (a warning).
+        func notConfirmedSummary(_ device: String) -> String {
+            switch self {
+            case .reboot: "Sent Restart to \(device); not confirmed"
+            case .dfu: "Sent Enter DFU to \(device); not confirmed"
+            default: summary(device, failed: false)
+            }
+        }
+
+        /// The activity log's words when the command was sent but the device
+        /// didn't come back.
+        func notBackSummary(_ device: String) -> String {
+            switch self {
+            case .reboot: "Sent Restart to \(device), but it didn’t come back on USB"
+            case .dfu: "Sent Enter DFU to \(device), but it didn’t come back in DFU mode"
+            default: summary(device, failed: true)
+            }
+        }
+
         /// What carried it out, as the activity log's service.
         var service: String { self == .removeTrust ? "Apple Configurator" : "USB" }
     }
@@ -73,6 +94,12 @@ final class DeviceActionController {
             self.identifiers = identifiers
         }
 
+        /// The same device: a shared identifier, or the same name when neither has one.
+        func isSameDevice(as other: Target) -> Bool {
+            if identifiers.isEmpty || other.identifiers.isEmpty { return name == other.name }
+            return !Set(identifiers).isDisjoint(with: other.identifiers)
+        }
+
         init(_ device: USBDevice) {
             let identifiers = [device.serialNumber, device.displayUDID, device.ecid].compactMap { $0 }
             name = device.serialNumber.map { "\(device.modelDisplayName) (\($0))" } ?? device.modelDisplayName
@@ -84,6 +111,44 @@ final class DeviceActionController {
     private(set) var runningAction: Action?
     /// Last human-readable error, shown transiently in the UI.
     private(set) var lastError: String?
+    /// The devices the app is waiting for after Restart or Enter DFU, and
+    /// how each wait ended until it's dismissed (the bar above the details).
+    /// A wait holds nothing up: other actions run meanwhile.
+    private(set) var returnWaits: [ReturnWait] = []
+    /// Watches the device list after Restart and Enter DFU; nil doesn't wait
+    /// (previews and most tests). Set by the app.
+    @ObservationIgnored var returnWatch: DeviceReturnWatch?
+    /// How long a green "back" result stays before it closes by itself.
+    /// Orange and red results stay until dismissed: they ask for something.
+    @ObservationIgnored var backResultLifetime: Duration = .seconds(10)
+    /// Results the pointer rests on: they don't close by themselves meanwhile.
+    @ObservationIgnored private var heldWaits: Set<ReturnWait.ID> = []
+
+    /// One device the app is waiting for, or how that wait ended.
+    struct ReturnWait: Identifiable, Equatable {
+        enum State: Equatable {
+            case waiting
+            /// Back in the expected mode.
+            case back
+            /// Done, with a note: back but not confirmed, or sent but not seen
+            /// (a locked device, a Mac), or Stop Waiting. Orange, not failed.
+            case notConfirmed(String)
+            /// The device didn't come back where it should have.
+            case failed(String)
+        }
+
+        let id = UUID()
+        let action: Action
+        let target: Target
+        let expectation: DeviceReturnExpectation
+        let simulated: Bool
+        var state: State = .waiting
+
+        /// "Waiting up to 30 seconds for iPhone 16 to come back in DFU mode".
+        var waitingText: String {
+            "Waiting up to \(expectation.timeoutText) for \(target.name) to come back\(expectation.modeText)"
+        }
+    }
     /// The device that refused Enter Recovery because it doesn't trust this
     /// Mac; the Actions section shows trust and button-step guidance for it.
     private(set) var trustRequiredDeviceID: UInt64?
@@ -95,6 +160,9 @@ final class DeviceActionController {
         case trustRequired(deviceID: UInt64)
         /// The administrator prompt was cancelled: nothing was done.
         case cancelled
+        /// The VDM went out, but the device's reply was missed: it may
+        /// already be rebooting.
+        case replyMissed
 
         init(errorMessage: String?) {
             self = errorMessage.map(Outcome.failed) ?? .done
@@ -170,22 +238,47 @@ final class DeviceActionController {
 
     // MARK: - Actions
 
-    /// Force-restarts the connected device via USB-PD (admin prompt).
+    /// Force-restarts the connected device via USB-PD (admin prompt), on its
+    /// own USB-C port; waits for it to come back (not for a Mac: a Mac that
+    /// starts up doesn't appear on USB).
     func restart(device: USBDevice) {
-        let route = simulator(for: device)
-        guard route.allowed else { return }
-        if let demo = route.demo { return simulate(.reboot, for: Target(device)) { await demo.restart() } }
-        let hardware = hardware
-        start(.reboot, for: Target(device)) { hardware.runPrivilegedVDM("reboot") }
+        let expectation = device.modelInfo?.isMac == true ? nil : DeviceReturnExpectation.restart(of: device)
+        sendVDM(.reboot, "reboot", to: device, expecting: expectation) { await $0.restart() }
     }
 
-    /// Reboots the connected device into DFU mode via USB-PD (admin prompt).
+    /// Reboots the connected device into DFU mode via USB-PD (admin prompt),
+    /// on its own USB-C port; waits for it to come back in DFU mode.
     func enterDFU(device: USBDevice) {
+        sendVDM(.dfu, "dfu", to: device, expecting: .dfu(of: device)) { await $0.enterDFU() }
+    }
+
+    /// Why Restart and Enter DFU can't go to this device now, or nil. Reads
+    /// the IORegistry (no privileges); the pretend iPhone is always reachable.
+    /// The detail view asks every few seconds, not while drawing.
+    func portRefusal(for device: USBDevice) -> USBCPort.Refusal? {
+        if PretendIPhone.isPretend(device) { return nil }
+        if case .failure(let refusal) = hardware.usbCPort(forEntryID: device.id) { return refusal }
+        return nil
+    }
+
+    private func sendVDM(_ action: Action, _ command: String, to device: USBDevice,
+                         expecting expectation: DeviceReturnExpectation?,
+                         demoWork: @escaping @MainActor (DemoUSB) async -> Outcome) {
         let route = simulator(for: device)
         guard route.allowed else { return }
-        if let demo = route.demo { return simulate(.dfu, for: Target(device)) { await demo.enterDFU() } }
+        if let demo = route.demo {
+            return simulate(action, for: Target(device), expecting: expectation) { await demoWork(demo) }
+        }
+        // The same check as the dimmed buttons, once more before the password is asked.
+        if case .failure(let refusal) = hardware.usbCPort(forEntryID: device.id) {
+            lastError = refusal.message
+            return
+        }
         let hardware = hardware
-        start(.dfu, for: Target(device)) { hardware.runPrivilegedVDM("dfu") }
+        let entryID = device.id
+        start(action, for: Target(device), expecting: expectation) {
+            hardware.runPrivilegedVDM(command, deviceEntryID: entryID)
+        }
     }
 
     /// Asks a booted device to reboot into Recovery mode via lockdownd —
@@ -249,9 +342,10 @@ final class DeviceActionController {
     /// Runs blocking `work` off the main thread, publishes its outcome and
     /// records it. Waits for the outcome, so tests can check what was recorded.
     @discardableResult
-    func start(_ action: Action, for target: Target, onSuccess: (@MainActor () -> Void)? = nil,
+    func start(_ action: Action, for target: Target, expecting expectation: DeviceReturnExpectation? = nil,
+               onSuccess: (@MainActor () -> Void)? = nil,
                work: @escaping @Sendable () throws -> Outcome) -> Task<Void, Never>? {
-        perform(action, for: target, simulated: false, onSuccess: onSuccess) {
+        perform(action, for: target, simulated: false, expecting: expectation, onSuccess: onSuccess) {
             do {
                 // Its own threads: the work blocks (sockets, USB, the password prompt).
                 return try await BlockingWork.run(work)
@@ -262,16 +356,18 @@ final class DeviceActionController {
     }
 
     /// Runs a simulated action on the pretend iPhone; recorded as simulated.
-    private func simulate(_ action: Action, for target: Target, onSuccess: (@MainActor () -> Void)? = nil,
+    private func simulate(_ action: Action, for target: Target, expecting expectation: DeviceReturnExpectation? = nil,
+                          onSuccess: (@MainActor () -> Void)? = nil,
                           work: @escaping @MainActor () async -> Outcome) {
-        perform(action, for: target, simulated: true, onSuccess: onSuccess, work: work)
+        perform(action, for: target, simulated: true, expecting: expectation, onSuccess: onSuccess, work: work)
     }
 
     /// The last action's task, so tests can wait for it.
     @ObservationIgnored private(set) var currentTask: Task<Void, Never>?
 
     @discardableResult
-    private func perform(_ action: Action, for target: Target, simulated: Bool, onSuccess: (@MainActor () -> Void)?,
+    private func perform(_ action: Action, for target: Target, simulated: Bool,
+                         expecting expectation: DeviceReturnExpectation?, onSuccess: (@MainActor () -> Void)?,
                          work: @escaping @MainActor () async -> Outcome) -> Task<Void, Never>? {
         guard runningAction == nil else { return nil }
         if restore?.isRunning == true {
@@ -281,29 +377,46 @@ final class DeviceActionController {
         runningAction = action
         lastError = nil
         trustRequiredDeviceID = nil
+        // A new action on a device replaces its earlier result in the bar.
+        returnWaits.removeAll { $0.state != .waiting && $0.target.isSameDevice(as: target) }
         let started = ContinuousClock.now
+        let startDate = Date.now
         let task = Task {
-            let outcome = await work()
-            let elapsed = started.duration(to: .now)
-            let duration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-            func note(_ text: String?) -> String? {
-                guard simulated else { return text }
-                return [text, Self.demoNote].compactMap { $0 }.joined(separator: " ")
+            var outcome = await work()
+            // The command went out: the device is watched for on its own, and
+            // the app is free for other devices meanwhile. After a missed
+            // reply, a short watch instead of a failure.
+            if let expectation, let watch = returnWatch {
+                let watched: DeviceReturnExpectation? = switch outcome {
+                case .done: expectation
+                case .replyMissed: expectation.afterMissedReply()
+                default: nil
+                }
+                if let watched {
+                    runningAction = nil
+                    watchForReturn(action, target, watched, simulated: simulated, since: startDate, started: started,
+                                   watch: watch, onSuccess: onSuccess)
+                    return
+                }
             }
+            if outcome == .replyMissed {
+                outcome = .failed(VDMToolReplyMissed + " Check whether the device restarted.")
+            }
+            let duration = Self.seconds(since: started)
             switch outcome {
             case .done:
-                record(action, target, failed: false, note: note(nil), simulated: simulated, duration: duration)
+                record(action, target, failed: false, note: note(nil, simulated), simulated: simulated, duration: duration)
                 onSuccess?()
             case .failed(let message):
                 // The message can hold a UDID or the device's reply: private.
                 logger.error("\(String(describing: action), privacy: .public) failed: \(message, privacy: .private)")
-                record(action, target, failed: true, note: note(message), simulated: simulated, duration: duration)
+                record(action, target, failed: true, note: note(message, simulated), simulated: simulated, duration: duration)
                 lastError = message
             case .trustRequired(let deviceID):
-                record(action, target, failed: true, note: note("The device doesn’t trust this Mac."),
+                record(action, target, failed: true, note: note("The device doesn’t trust this Mac.", simulated),
                        simulated: simulated, duration: duration)
                 trustRequiredDeviceID = deviceID
-            case .cancelled:
+            case .cancelled, .replyMissed:
                 break
             }
             runningAction = nil
@@ -312,19 +425,110 @@ final class DeviceActionController {
         return task
     }
 
+    /// The last green result's closing, so tests can wait for it.
+    @ObservationIgnored private(set) var closingTask: Task<Void, Never>?
+    /// The last wait's task, so tests can wait for it.
+    @ObservationIgnored private(set) var currentWaitTask: Task<Void, Never>?
+    @ObservationIgnored private var waitTasks: [UUID: Task<Void, Never>] = [:]
+
+    /// Watches for the device after the command, then records how it ended:
+    /// back (done), not confirmed (a warning, never a failure: sent but not
+    /// seen, or Stop Waiting), or not back where it had to be (failed).
+    private func watchForReturn(_ action: Action, _ target: Target, _ expectation: DeviceReturnExpectation,
+                                simulated: Bool, since startDate: Date, started: ContinuousClock.Instant,
+                                watch: DeviceReturnWatch, onSuccess: (@MainActor () -> Void)?) {
+        let wait = ReturnWait(action: action, target: target, expectation: expectation, simulated: simulated)
+        returnWaits.append(wait)
+        let task = Task {
+            let result = await watch.wait(for: expectation, since: startDate)
+            let duration = Self.seconds(since: started)
+            let state: ReturnWait.State
+            switch result {
+            case .back:
+                state = .back
+                record(action, target, failed: false, note: note(nil, simulated), simulated: simulated, duration: duration)
+                onSuccess?()
+            case .backUnconfirmed(let text):
+                state = .notConfirmed(text)
+                recordNotConfirmed(action, target, text, simulated: simulated, duration: duration)
+            case .stopped:
+                let text = "Sent; stopped waiting before the device came back."
+                state = .notConfirmed(text)
+                recordNotConfirmed(action, target, text, simulated: simulated, duration: duration)
+            case .notBack(let message) where expectation.mayStayHidden:
+                state = .notConfirmed(message)
+                recordNotConfirmed(action, target, message, simulated: simulated, duration: duration)
+            case .notBack(let message):
+                state = .failed(message)
+                record(action, target, failed: true, note: note(message, simulated), simulated: simulated,
+                       duration: duration, summary: action.notBackSummary(target.name))
+            }
+            if let index = returnWaits.firstIndex(where: { $0.id == wait.id }) { returnWaits[index].state = state }
+            waitTasks[wait.id] = nil
+            if state == .back { closingTask = Task { await closeWhenSeen(wait.id) } }
+        }
+        waitTasks[wait.id] = task
+        currentWaitTask = task
+    }
+
+    /// A green result closes by itself after `backResultLifetime`, and not
+    /// while the pointer rests on it (`holdWait`).
+    private func closeWhenSeen(_ id: ReturnWait.ID) async {
+        try? await Task.sleep(for: backResultLifetime)
+        while heldWaits.contains(id) {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        returnWaits.removeAll { $0.id == id && $0.state == .back }
+    }
+
+    /// The pointer rests on a result (true) or left it (false).
+    func holdWait(_ id: ReturnWait.ID, _ held: Bool) {
+        if held { heldWaits.insert(id) } else { heldWaits.remove(id) }
+    }
+
+    /// Stop Waiting: ends the wait now; recorded as sent, not confirmed.
+    func stopWaiting(_ id: ReturnWait.ID) {
+        waitTasks[id]?.cancel()
+    }
+
+    /// Takes a finished wait's result away; a running one is stopped first.
+    func dismissWait(_ id: ReturnWait.ID) {
+        if returnWaits.first(where: { $0.id == id })?.state == .waiting { return stopWaiting(id) }
+        returnWaits.removeAll { $0.id == id }
+    }
+
+    private func note(_ text: String?, _ simulated: Bool) -> String? {
+        guard simulated else { return text }
+        return [text, Self.demoNote].compactMap { $0 }.joined(separator: " ")
+    }
+
+    private nonisolated static func seconds(since started: ContinuousClock.Instant) -> TimeInterval {
+        let elapsed = started.duration(to: .now)
+        return Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+    }
+
+    /// Sent, but not seen to arrive: a warning entry, never a failure.
+    private func recordNotConfirmed(_ action: Action, _ target: Target, _ text: String, simulated: Bool,
+                                    duration: TimeInterval) {
+        activityLog?.recordAction(action.notConfirmedSummary(target.name), note: note(text, simulated), isWarning: true,
+                                  service: action.service, connection: simulated ? "Demo" : nil,
+                                  devices: target.identifiers, duration: duration)
+    }
+
     private func record(_ action: Action, _ target: Target, failed: Bool, note: String?, simulated: Bool,
-                        duration: TimeInterval) {
-        activityLog?.recordAction(action.summary(target.name, failed: failed), note: note, failed: failed,
+                        duration: TimeInterval, summary: String? = nil) {
+        activityLog?.recordAction(summary ?? action.summary(target.name, failed: failed), note: note, failed: failed,
                                   service: action.service, connection: simulated ? "Demo" : nil,
                                   devices: target.identifiers, duration: duration)
     }
 
     /// Done, failed with a message, or cancelled at the authorization prompt
     /// (cancellation is intentionally silent, and not recorded).
-    nonisolated static func runPrivilegedVDM(_ action: String) -> Outcome {
-        switch executeViaAppleScript(action) {
+    nonisolated static func runPrivilegedVDM(_ action: String, deviceEntryID: UInt64) -> Outcome {
+        switch executeViaAppleScript(PrivilegedVDM.commandArguments(action: action, deviceEntryID: deviceEntryID)) {
         case .success: .done
         case .cancelled: .cancelled
+        case .replyMissed: .replyMissed
         case .failure(let message): .failed(message)
         }
     }
@@ -332,22 +536,28 @@ final class DeviceActionController {
     nonisolated enum RunResult: Sendable, Equatable {
         case success
         case cancelled
+        /// The helper's exit 6: sent, but the device's reply was missed.
+        case replyMissed
         case failure(String)
     }
 
     /// Uses `osascript … with administrator privileges` to run our own binary
-    /// as root with `--vdm <action>`. A single OS password prompt authorizes it.
-    /// Before the prompt, the executable on disk must be the signed app that
-    /// is running: a swapped binary is never run as root.
-    private nonisolated static func executeViaAppleScript(_ action: String) -> RunResult {
+    /// as root with `--vdm <action> --entry <hex>`. A single OS password
+    /// prompt authorizes it. Before the prompt, the executable on disk must
+    /// be the signed app that is running: a swapped binary is never run as root.
+    private nonisolated static func executeViaAppleScript(_ arguments: [String]) -> RunResult {
         // Second safeguard behind LiveUSBHardware: no administrator prompt, no VDM under tests.
-        if let refusal = USBGuard.shared.refusal(for: "administrator prompt for --vdm \(action)") { return .failure(refusal) }
+        if let refusal = USBGuard.shared.refusal(for: "administrator prompt for \(arguments.prefix(2).joined(separator: " "))") {
+            return .failure(refusal)
+        }
+        // Only the forms the root side accepts; nothing else reaches the shell.
+        guard PrivilegedVDM.parse(arguments) != nil else { return .failure("Unknown arguments.") }
         guard let executablePath = Bundle.main.executablePath else { return .failure(unverifiedApp) }
         if let refusal = signatureRefusal(executable: executablePath, bundle: Bundle.main.bundleURL) {
             return .failure(refusal)
         }
         // Quote for the embedded shell command inside the AppleScript string.
-        let shellCommand = "\(shellQuoted(executablePath)) --vdm \(action)"
+        let shellCommand = ([executablePath] + arguments).map(shellQuoted).joined(separator: " ")
         let appleScriptSource = """
         do shell script "\(escapedForAppleScript(shellCommand))" with administrator privileges
         """
@@ -364,6 +574,7 @@ final class DeviceActionController {
         if status == 0 { return .success }
         // osascript returns -128 when the user cancels the authorization dialog.
         if errorText.contains("-128") || errorText.contains("User canceled") { return .cancelled }
+        if errorText.contains(VDMToolReplyMissed) { return .replyMissed }
         // The root helper's message is the last line; osascript puts its own words before it.
         return .failure(errorText.isEmpty ? "The command failed (exit \(status))." : errorText)
     }

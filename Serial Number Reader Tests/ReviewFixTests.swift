@@ -21,7 +21,7 @@ struct ReviewFixTests {
     }
 
     private func availability(_ device: USBDevice, busy: Bool = false, editing: Bool = false) -> DeviceActionAvailability {
-        DeviceActionAvailability(device: device, busy: busy, editingAssetTag: editing, connectedDeviceCount: 1,
+        DeviceActionAvailability(device: device, busy: busy, editingAssetTag: editing, portRefusal: nil,
                                  configuratorAvailable: true, jamfState: .noMatch)
     }
 

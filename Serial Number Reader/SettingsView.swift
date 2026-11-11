@@ -17,7 +17,7 @@ struct SettingsView: View {
             // connection would be. An inset, not a stack around the tab, so
             // the tab keeps its name and icon in the Settings toolbar.
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let problem = connections.conversionProblem {
+                if let problem = connections.listProblem ?? connections.conversionProblem {
                     WarningLabel(problem)
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)

@@ -10,10 +10,10 @@
 // Portions derived from github.com/AsahiLinux/macvdmtool (Apache-2.0) and
 // github.com/osy/ThunderboltPatcher. The VDM payloads and ACE2 host-interface
 // command sequences originate there. Reworked to:
-//   * work on any USB-C port (no designated DFU port requirement, like
-//     OwDFU), but refuse when more than one port has a device connected:
-//     iterator order isn't physical order, and a device the app can't see
-//     (a locked iPhone, another Mac on a cable) must never get the command;
+//   * send only to the selected device's own USB-C port (found by
+//     USBCPort and checked again just before sending), opening no other
+//     port: a device the app can't see (a locked iPhone, another Mac on a
+//     cable) on another port is never reached;
 //   * expose reboot/dfu as a library call returning a status code.
 
 namespace {
@@ -21,6 +21,13 @@ namespace {
 struct Failure {
     std::string message;
 };
+
+// The command went out, but the device's reply wasn't seen: it may already
+// be rebooting (the app then watches for it to come back).
+struct ReplyMissed {};
+
+// The device's port changed or vanished between the checks and the send.
+struct RecheckFailed {};
 
 // Serialize a trivially-copyable value into a byte stream (little-endian on
 // Apple Silicon, matching the controller's expectation).
@@ -148,7 +155,7 @@ void DoVDM(HPMPort &inst, int no, std::vector<uint32_t> vdm) {
             break;
     }
     if (i >= 16)
-        throw Failure{"The device didn’t reply to the command."};
+        throw ReplyMissed{};
 
     uint32_t vdmhdr;
     std::stringstream reply;
@@ -174,8 +181,10 @@ bool IsConnected(io_service_t service, int32_t rid) {
     return inst.readRegister(0, 0x3f)[0] & 1;
 }
 
-// Put a single port into debug (DBMa) mode and run the action.
-void RunOnPort(io_service_t service, int32_t rid, const std::string &action, uint32_t key) {
+// Put a single port into debug (DBMa) mode and run the action. `recheck`,
+// when given, runs just before the command is sent; NO means nothing is sent.
+void RunOnPort(io_service_t service, int32_t rid, const std::string &action, uint32_t key,
+               BOOL (^recheck)(void) = nil) {
     HPMPort inst(service, rid);
     int no = 0;
 
@@ -194,6 +203,9 @@ void RunOnPort(io_service_t service, int32_t rid, const std::string &action, uin
         inst.inDebugMode = true;
     }
 
+    if (recheck && !recheck())
+        throw RecheckFailed{};
+
     if (action == "reboot")
         DoReboot(inst, no);
     else if (action == "dfu")
@@ -204,23 +216,18 @@ void RunOnPort(io_service_t service, int32_t rid, const std::string &action, uin
 
 } // namespace
 
+NSString *const VDMToolReplyMissed =
+    @"The command was sent, but the device’s reply was missed.";
+NSString *const VDMToolPortChanged =
+    @"The device’s USB-C port changed before the command was sent, so nothing was sent. Try again.";
+NSString *const VDMToolPortNotConnected =
+    @"The device’s USB-C port reports no connection, so nothing was sent. Reconnect the cable and try again.";
+
 @implementation VDMTool
 
-+ (int32_t)exitCodeForConnectedPorts:(NSInteger)count {
-    if (count == 0) return 2;
-    if (count > 1) return 4;
-    return 0;
-}
-
-+ (nullable NSString *)refusalForConnectedPorts:(NSInteger)count {
-    switch ([self exitCodeForConnectedPorts:count]) {
-    case 2: return @"No device is connected to a USB-C port.";
-    case 4: return @"More than one USB-C port has something connected, such as another device, a charger or a hub, so the command could reach the wrong one. Disconnect everything except this device and try again.";
-    default: return nil;
-    }
-}
-
-+ (int32_t)runWithAction:(NSString *)action {
++ (int32_t)runWithAction:(NSString *)action
+    onControllerWithEntryID:(uint64_t)entryID
+                    recheck:(BOOL (^)(void))recheck {
     std::string act = action.UTF8String;
     if (act != "reboot" && act != "dfu") {
         fprintf(stderr, "Unknown action: %s\n", act.c_str());
@@ -230,56 +237,49 @@ void RunOnPort(io_service_t service, int32_t rid, const std::string &action, uin
     try {
         uint32_t key = GetUnlockKey();
 
-        CFMutableDictionaryRef matching = IOServiceMatching("AppleHPM");
-        if (!matching)
-            throw Failure{"IOServiceMatching failed."};
-        io_iterator_t iter = 0;
-        if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iter) != kIOReturnSuccess)
-            throw Failure{"IOServiceGetMatchingServices failed."};
-
-        // First every port, then decide: exactly one port with a device, or nothing is sent.
-        std::vector<std::pair<io_service_t, int32_t>> connected;
-        io_service_t device;
-        while ((device = IOIteratorNext(iter))) {
-            int32_t rid = -1;
-            CFNumberRef data = (CFNumberRef)IORegistryEntryCreateCFProperty(
-                device, CFSTR("RID"), kCFAllocatorDefault, 0);
-            if (data) {
-                CFNumberGetValue(data, kCFNumberSInt32Type, &rid);
-                CFRelease(data);
-            }
-            bool isConnected = false;
-            try {
-                isConnected = IsConnected(device, rid);
-            } catch (const Failure &f) {
-                // A port that can't be read can't be sent a command either.
-                fprintf(stderr, "Port RID %d: %s\n", rid, f.message.c_str());
-            }
-            if (isConnected)
-                connected.emplace_back(device, rid);
-            else
-                IOObjectRelease(device);
+        // Only this one port controller: no other port is opened.
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(entryID));
+        if (!service || !IOObjectConformsTo(service, "AppleHPM")) {
+            if (service) IOObjectRelease(service);
+            fprintf(stderr, "%s\n", VDMToolPortChanged.UTF8String);
+            return 5;
         }
-        IOObjectRelease(iter);
-
-        int32_t code = [self exitCodeForConnectedPorts:(NSInteger)connected.size()];
-        if (code != 0) {
-            fprintf(stderr, "%s\n", [self refusalForConnectedPorts:(NSInteger)connected.size()].UTF8String);
-            for (auto &port : connected) IOObjectRelease(port.first);
-            return code;
+        int32_t rid = -1;
+        CFNumberRef data = (CFNumberRef)IORegistryEntryCreateCFProperty(service, CFSTR("RID"), kCFAllocatorDefault, 0);
+        if (data) {
+            CFNumberGetValue(data, kCFNumberSInt32Type, &rid);
+            CFRelease(data);
         }
 
-        auto port = connected.front();
+        // The last check on that port: the controller itself reports a connection.
+        bool connected = false;
         try {
-            RunOnPort(port.first, port.second, act, key);
+            connected = IsConnected(service, rid);
         } catch (const Failure &f) {
-            IOObjectRelease(port.first);
-            fprintf(stderr, "%s\n", f.message.c_str());
-            return 3;
+            fprintf(stderr, "Port RID %d: %s\n", rid, f.message.c_str());
         }
-        IOObjectRelease(port.first);
-        printf("Sent '%s' on port RID %d\n", act.c_str(), port.second);
-        return 0;
+        if (!connected) {
+            IOObjectRelease(service);
+            fprintf(stderr, "%s\n", VDMToolPortNotConnected.UTF8String);
+            return 2;
+        }
+
+        int32_t code = 0;
+        try {
+            RunOnPort(service, rid, act, key, recheck);
+            printf("Sent '%s' on port RID %d\n", act.c_str(), rid);
+        } catch (const ReplyMissed &) {
+            fprintf(stderr, "%s\n", VDMToolReplyMissed.UTF8String);
+            code = 6;
+        } catch (const RecheckFailed &) {
+            fprintf(stderr, "%s\n", VDMToolPortChanged.UTF8String);
+            code = 5;
+        } catch (const Failure &f) {
+            fprintf(stderr, "%s\n", f.message.c_str());
+            code = 3;
+        }
+        IOObjectRelease(service);
+        return code;
     } catch (const Failure &f) {
         fprintf(stderr, "%s\n", f.message.c_str());
         return 1;

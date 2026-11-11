@@ -476,7 +476,7 @@ struct LiveLookupTests {
         // and the release check starts it only when no Apple device is connected.
         if run.fault == "usb-attempt" {
             try #require(USBGuard.shared.isActive, "The USB guard is off: the fault isn't injected")
-            _ = LiveUSBHardware().runPrivilegedVDM("reboot")
+            _ = LiveUSBHardware().runPrivilegedVDM("reboot", deviceEntryID: 0x1000_0A01)
             run.record(step: "usb-attempt", passed: false, note: "a Restart through the real doorway, injected on purpose (--fault usb-attempt)")
         }
 

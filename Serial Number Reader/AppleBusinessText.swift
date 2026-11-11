@@ -59,6 +59,7 @@ nonisolated enum AppleBusinessText {
     static func exportStatus(_ state: AppleBusinessLookupState) -> String {
         switch state {
         case .notConfigured: ""
+        case .incomplete: "Account incomplete"
         case .unavailable: "Not available"
         case .loading: "Pending"
         case .found(let record): status(record.device)

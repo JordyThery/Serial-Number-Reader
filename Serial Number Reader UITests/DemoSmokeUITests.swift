@@ -243,7 +243,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(code.waitForNonExistence(timeout: 5))
     }
 
-    /// Enter DFU: back as an identified DFU device with the button steps; Restart boots it again.
+    /// Enter DFU: back as an identified DFU device with the button steps, and said so in the bar, which closes by itself; Restart boots it again.
     func test12EnterDFUAndRestart() {
         selectPretendIPhone()
         tap(button("Enter DFU"), timeout: 10)
@@ -252,6 +252,10 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(anyContaining("Identified through Apple Configurator").exists, "The DFU device isn't identified")
         XCTAssertFalse(button("Enter DFU").exists, "Enter DFU is offered in DFU")
         XCTAssertTrue(any("UDID").exists && any("ECID").exists, "No UDID or ECID in DFU")
+        // The bar above the details: back in DFU mode, then closed by itself (green results do).
+        let back = anyContaining("is back in DFU mode")
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "No “back in DFU mode” in the bar")
+        XCTAssertTrue(back.waitForNonExistence(timeout: 20), "The green result didn't close by itself")
         tap(button("Restart"), timeout: 10)
         selectNewestRow(until: button("Enter Recovery"))
     }

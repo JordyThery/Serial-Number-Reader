@@ -72,8 +72,7 @@ struct ContentView: View {
                         appleBusiness: appleBusiness,
                         actions: actions,
                         restore: restore,
-                        monitor: monitor,
-                        connectedDeviceCount: monitor.devices.count(where: \.isConnected)
+                        monitor: monitor
                     )
                     .id(device.id) // reset per-device view state on selection change
                 } else {
@@ -90,6 +89,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     RestoreBanner(restore: restore)
+                    DeviceReturnBanner(actions: actions)
                     RetryWaitBar(waits: jamf.waits)
                     RetryWaitBar(waits: appleBusiness.waits)
                 }

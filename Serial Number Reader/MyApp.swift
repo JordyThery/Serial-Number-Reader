@@ -5,13 +5,16 @@ import SwiftUI
 @main
 struct MyApp {
     static func main() {
-        // When re-launched as root with `--vdm <action>`, act as a CLI that
-        // sends the USB-PD VDM and exits — the GUI never starts.
-        let args = CommandLine.arguments
-        if let index = args.firstIndex(of: "--vdm"), index + 1 < args.count {
-            // Never under tests (a third safeguard: the prompt that starts this is refused too).
-            if USBGuard.shared.refusal(for: "--vdm \(args[index + 1])") != nil { exit(2) }
-            exit(VDMTool.run(withAction: args[index + 1]))
+        // When re-launched as root with `--vdm <action> --entry <hex>`, act as
+        // a CLI that sends the USB-PD VDM to that device's port and exits —
+        // the GUI never starts. Any other use of `--vdm` exits too.
+        let args = Array(CommandLine.arguments.dropFirst())
+        if args.contains("--vdm") {
+            guard let parsed = PrivilegedVDM.parse(args) else {
+                FileHandle.standardError.write(Data("Unknown arguments.\n".utf8))
+                exit(1)
+            }
+            exit(PrivilegedVDM.run(parsed))
         }
         SerialNumberReaderApp.main()
     }
@@ -19,8 +22,9 @@ struct MyApp {
 
 /// Owns the restore controller so quitting can be confirmed while a Restore
 /// or Revive runs, and the USB actions, linked to it so neither starts while
-/// the other runs.
+/// the other runs; and the device list both watch for a device to come back.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let monitor = USBDeviceMonitor(demo: AppDemo.usb)
     let restore = RestoreController(activityLog: .app, demo: AppDemo.usb)
     let actions = DeviceActionController(activityLog: .app, demo: AppDemo.usb)
 
@@ -28,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
         actions.restore = restore
         restore.actions = actions
+        let watch = DeviceReturnWatch { [monitor] in monitor.devices }
+        actions.returnWatch = watch
+        restore.returnWatch = watch
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -44,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct SerialNumberReaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var monitor = USBDeviceMonitor(demo: AppDemo.usb)
     @State private var jamf = JamfStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
     @State private var appleBusiness = AppleBusinessStore(connections: AppDemo.connections, activityLog: .app, demo: AppDemo.mode)
     @State private var updates: UpdateChecker = {
@@ -55,6 +61,8 @@ struct SerialNumberReaderApp: App {
             activity: { logger.info("\($0, privacy: .private)") }
         )
     }()
+
+    private var monitor: USBDeviceMonitor { appDelegate.monitor }
 
     var body: some Scene {
         WindowGroup {
