@@ -234,6 +234,64 @@ struct DeviceReturnTests {
         #expect(DeviceReturnExpectation.restart(of: known).modes == [.recovery])
     }
 
+    @Test("A green result closes by itself, not while the pointer rests on it; orange and red stay")
+    func greenClosesByItself() async throws {
+        let list = List()
+        let actions = controller(TrapHardware(), list, log: ActivityLog())
+        actions.backResultLifetime = .milliseconds(50)
+        list.devices = [Self.dfu(id: 31, ecid: Self.ecid, at: .now.addingTimeInterval(5))]
+
+        // Held by the pointer: still there after its time.
+        actions.enterDFU(device: Self.booted(at: .distantPast))
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        let held = try #require(actions.returnWaits.last)
+        #expect(held.state == .back)
+        actions.holdWait(held.id, true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(actions.returnWaits.contains { $0.id == held.id })
+        // Let go: it closes.
+        actions.holdWait(held.id, false)
+        await actions.closingTask?.value
+        #expect(!actions.returnWaits.contains { $0.id == held.id })
+
+        // Orange (sent, not seen) stays.
+        list.devices = []
+        actions.returnWatch = DeviceReturnWatch(devices: { list.devices }, interval: .milliseconds(5),
+                                                maximumWait: .milliseconds(30))
+        actions.restart(device: Self.booted(at: .distantPast))
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        try await Task.sleep(for: .milliseconds(200))
+        guard case .notConfirmed = actions.returnWaits.last?.state else {
+            Issue.record("The orange result didn't stay: \(actions.returnWaits)")
+            return
+        }
+    }
+
+    @Test("A new action on a device replaces its earlier result; another device's result stays")
+    func newActionReplacesResult() async throws {
+        let list = List()
+        let actions = controller(TrapHardware(), list, log: ActivityLog())
+        actions.returnWatch = DeviceReturnWatch(devices: { list.devices }, interval: .milliseconds(5),
+                                                maximumWait: .milliseconds(30))
+        let first = Self.booted(id: 0x1000_0A01, at: .distantPast)
+        let other = Self.booted(id: 0x1000_0B02, ecid: Self.otherECID, at: .distantPast)
+        actions.restart(device: first)
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        actions.restart(device: other)
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.count == 2)
+        // The first device again: its old (orange) result goes, the other's stays.
+        actions.restart(device: first)
+        await actions.currentTask?.value
+        await actions.currentWaitTask?.value
+        #expect(actions.returnWaits.count == 2)
+        #expect(actions.returnWaits.first?.target == DeviceActionController.Target(other))
+    }
+
     @Test("A missed reply is watched for a short time instead of failing at once")
     func missedReply() async throws {
         let hardware = TrapHardware()

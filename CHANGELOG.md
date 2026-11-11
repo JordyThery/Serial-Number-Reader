@@ -15,8 +15,9 @@
   mode, and says clearly when it doesn’t come back. After Restart and Enter
   DFU, a bar above the details names the device, says how long the app waits,
   and has a Stop Waiting button; other devices can be used meanwhile. A
-  restarted iPhone or iPad that stays locked shows “Sent; unlock the device to
-  see it again” instead of an error. When a device doesn’t confirm Restart or
+  device that came back is shown for a few seconds; a result that needs your
+  attention stays until you dismiss it. A restarted iPhone or iPad that stays
+  locked shows “Sent; unlock the device to see it again” instead of an error. When a device doesn’t confirm Restart or
   Enter DFU, the app watches for it for 30 seconds before reporting a problem.
 - **Mac DFU tips:** for a Mac in Recovery, the Actions section explains that DFU mode
   works through the Mac’s DFU port, with a link to Apple’s page that shows

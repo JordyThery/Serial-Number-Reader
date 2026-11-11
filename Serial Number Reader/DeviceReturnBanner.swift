@@ -2,8 +2,9 @@ import SwiftUI
 
 /// Above the device details: each device the app is waiting for after
 /// Restart or Enter DFU, by name, with how long the app waits and Stop
-/// Waiting; then how the wait ended until it's dismissed. The rest of the
-/// app stays usable meanwhile.
+/// Waiting; then how the wait ended: green closes by itself after a few
+/// seconds, orange and red stay until dismissed. The rest of the app stays
+/// usable meanwhile.
 struct DeviceReturnBanner: View {
     let actions: DeviceActionController
 
@@ -44,6 +45,8 @@ private struct DeviceReturnRow: View {
         .padding(12)
         .background(.regularMaterial, in: .rect(cornerRadius: 10))
         .padding([.horizontal, .top], 12)
+        // A green result closes by itself after a few seconds, not while the pointer is on it.
+        .onHover { actions.holdWait(wait.id, $0) }
         .accessibilityElement(children: .contain)
         // The wait can last minutes: VoiceOver hears how it ended.
         .onChange(of: wait.state) { old, new in

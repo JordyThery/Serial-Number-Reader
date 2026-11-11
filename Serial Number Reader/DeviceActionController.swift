@@ -94,6 +94,12 @@ final class DeviceActionController {
             self.identifiers = identifiers
         }
 
+        /// The same device: a shared identifier, or the same name when neither has one.
+        func isSameDevice(as other: Target) -> Bool {
+            if identifiers.isEmpty || other.identifiers.isEmpty { return name == other.name }
+            return !Set(identifiers).isDisjoint(with: other.identifiers)
+        }
+
         init(_ device: USBDevice) {
             let identifiers = [device.serialNumber, device.displayUDID, device.ecid].compactMap { $0 }
             name = device.serialNumber.map { "\(device.modelDisplayName) (\($0))" } ?? device.modelDisplayName
@@ -112,6 +118,11 @@ final class DeviceActionController {
     /// Watches the device list after Restart and Enter DFU; nil doesn't wait
     /// (previews and most tests). Set by the app.
     @ObservationIgnored var returnWatch: DeviceReturnWatch?
+    /// How long a green "back" result stays before it closes by itself.
+    /// Orange and red results stay until dismissed: they ask for something.
+    @ObservationIgnored var backResultLifetime: Duration = .seconds(10)
+    /// Results the pointer rests on: they don't close by themselves meanwhile.
+    @ObservationIgnored private var heldWaits: Set<ReturnWait.ID> = []
 
     /// One device the app is waiting for, or how that wait ended.
     struct ReturnWait: Identifiable, Equatable {
@@ -366,6 +377,8 @@ final class DeviceActionController {
         runningAction = action
         lastError = nil
         trustRequiredDeviceID = nil
+        // A new action on a device replaces its earlier result in the bar.
+        returnWaits.removeAll { $0.state != .waiting && $0.target.isSameDevice(as: target) }
         let started = ContinuousClock.now
         let startDate = Date.now
         let task = Task {
@@ -412,6 +425,8 @@ final class DeviceActionController {
         return task
     }
 
+    /// The last green result's closing, so tests can wait for it.
+    @ObservationIgnored private(set) var closingTask: Task<Void, Never>?
     /// The last wait's task, so tests can wait for it.
     @ObservationIgnored private(set) var currentWaitTask: Task<Void, Never>?
     @ObservationIgnored private var waitTasks: [UUID: Task<Void, Never>] = [:]
@@ -450,9 +465,25 @@ final class DeviceActionController {
             }
             if let index = returnWaits.firstIndex(where: { $0.id == wait.id }) { returnWaits[index].state = state }
             waitTasks[wait.id] = nil
+            if state == .back { closingTask = Task { await closeWhenSeen(wait.id) } }
         }
         waitTasks[wait.id] = task
         currentWaitTask = task
+    }
+
+    /// A green result closes by itself after `backResultLifetime`, and not
+    /// while the pointer rests on it (`holdWait`).
+    private func closeWhenSeen(_ id: ReturnWait.ID) async {
+        try? await Task.sleep(for: backResultLifetime)
+        while heldWaits.contains(id) {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        returnWaits.removeAll { $0.id == id && $0.state == .back }
+    }
+
+    /// The pointer rests on a result (true) or left it (false).
+    func holdWait(_ id: ReturnWait.ID, _ held: Bool) {
+        if held { heldWaits.insert(id) } else { heldWaits.remove(id) }
     }
 
     /// Stop Waiting: ends the wait now; recorded as sent, not confirmed.
